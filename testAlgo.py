@@ -11,30 +11,43 @@ from quantopian.pipeline.filters import Q1500US
 import quantopian.optimize as opt
 
 bar_type = {
-    'none': 0,
-    'alpha':2,
-    'beta':4,
-    'gamma':8,
-    'gamma_alpha':10,
-    'gamma_beta':12,
-    'delta':16,
-    'delta_alpha':18,
-    'delta_beta':20,
-    'theta_plus_final':32,
-    'theta_minus_final':64
+    'none': 0.0,
+    'alpha': 2.0,
+    'beta': 4.0,
+    'gamma': 8.0,
+    'gamma_alpha': 10.0,
+    'gamma_beta': 12.0,
+    'delta': 16.0,
+    'delta_alpha': 18.0,
+    'delta_beta': 20.0,
+    'theta_plus_final': 32.0,
+    'theta_minus_final': 64.0,
+    0.0: 'none',
+    2.0: 'alpha',
+    4.0: 'beta',
+    8.0: 'gamma',
+    10.0: 'gamma_alpha',
+    12.0: 'gamma_beta',
+    16.0: 'delta',
+    18.0: 'delta_alpha',
+    20.0: 'delta_beta',
+    32.0: 'theta_plus_final',
+    64.0: 'theta_minus_final'
 }
+
 
 def initialize(context):
     """
     Called once at the start of the algorithm.
     """
     # referencing SPY so the 'handle_data' function will be called every minute
-    context.spy = sid(8554)
+    #context.spy = sid(8554)
 
-    context.stop_losses = {}
     context.intraday_bars = {}
     context.target_weights = {}
     context.daily_stat_history = []
+    context.positions_stop_loss = {}
+    context.positions_max_gain = {}
  #   schedule_function(
  #       open_positions,
  #       date_rules.every_day(),
@@ -93,12 +106,12 @@ def make_pipeline():
             USEquityPricing.low,
             USEquityPricing.close
         ],
-        mask=base_universe
-        
+        mask=volume_filter
+
     )
 
     pipe = Pipeline(
-        screen= volume_filter & (daily_classifier > 0),
+        screen=volume_filter & (daily_classifier > 0),
         columns={
             'daily_classifier': daily_classifier,
             'daily_high': USEquityPricing.high.latest,
@@ -113,13 +126,13 @@ def before_trading_start(context, data):
     Called every day before market open.
     """
     context.output = pipeline_output('my_pipeline')
+    context.current_stock_list =  context.output.index.tolist()
     
     context.daily_stat_history.append(context.output)
-    if len(context.daily_stat_history) > 3: #only keep last three units
+    if len(context.daily_stat_history) > 2:  # only keep last two units
        context.daily_stat_history.pop(0)
-    
 
-    print context.output['daily_classifier']
+    #print context.output['daily_classifier']
     sig_counts = context.output['daily_classifier'].value_counts()
     if 2.0 not in sig_counts.index:
         sig_counts[2.0] = 0.0
@@ -143,7 +156,7 @@ def before_trading_start(context, data):
        # gamma=sig_counts[8.0],
         gamma_alpha=sig_counts[10.0],
         gamma_beta=sig_counts[12.0],
-        delta= sig_counts[16.0])
+        delta=sig_counts[16.0])
        # delta_alpha= sig_counts[18.0],
        # delta_beta= sig_counts[20.0])
 
@@ -152,8 +165,8 @@ def handle_data(context, data):
     """
     Called every minute.
     """
-    
- #   exchange_time = get_datetime().astimezone(timezone('US/Eastern'))
+
+    exchange_time = get_datetime().astimezone(timezone('US/Eastern'))
    # print exchange_time
     # TODO
     #    WE WILL BE LOOKING FOR 3 COINCINDING INDICATORS
@@ -164,16 +177,38 @@ def handle_data(context, data):
 #    construct bars as time goes on then check properties of those bars
 #
 
-    #### LOOK FOR NEW POSITIONS TO TAKE
+    ##### LOOK FOR NEW POSITIONS TO TAKE ####
 
     context.longs = []
     context.shorts = []
-    
-    for sec in context.output.index.tolist():
+    open_orders = get_open_orders()
+    current_prices = data.current(context.current_stock_list, 'price')
+    for sec in context.current_stock_list:
         if data.can_trade(sec):
-            context.longs.append(sec)
+            if sec not in open_orders and sec not in context.portfolio.positions and context.output['daily_classifier'][sec] == bar_type['alpha'] and context.output['daily_high'][sec] < current_prices[sec]:   
+                print 'opening ' + sec.symbol + ' for Alpha thresh_price=' + str(context.output['daily_high'][sec]) + ' triggered_price=' + str(current_prices[sec]) + ' @ '  + str(exchange_time)
+                context.positions_max_gain[sec.sid] = 0
+                context.positions_stop_loss[sec.sid] = context.output['daily_low'][sec]
+                order_target_percent(sec, 0.05)
 
+
+    ##### LOOK AT CURRENT POSITIONS TO DETERMINE IF EXITS ARE NEEDED ####
+                
+                
+    for pos in context.portfolio.positions.itervalues():
+        # check stop loss
+        if pos.sid not in open_orders and pos.sid in current_prices and pos.amount > 0:           
+            if current_prices[pos.sid] < context.positions_stop_loss[pos.sid]:
+                print 'exiting ' + pos.sid.symbol + ' due to stop loss at ' + str(context.positions_stop_loss[pos.sid])
+                order_target_percent(pos.sid, 0)
+            # check trailing stop
+            context.positions_max_gain[pos.sid] = max(current_prices[pos.sid], context.positions_max_gain[pos.sid])
+            pct_change = (current_prices[pos.sid] - context.positions_max_gain[pos.sid]) / context.positions_max_gain[pos.sid] 
+            if pct_change < -0.1:
+                print 'exiting ' + pos.sid.symbol + ' due to trailing stop of ' + str(pct_change) + '% off of ' + str(context.positions_max_gain[pos.sid])
+                order_target_percent(pos.sid, 0)
     
+        
     # for sec in pipe_results[pipe_results['shorts']].index.tolist():
     #    if data.can_trade(sec):
     #        context.shorts.append(sec)
@@ -200,10 +235,7 @@ def handle_data(context, data):
         # we've breeched our stop loss so let close this position
 pass
 
-def set_trailing_stop(context, data):
-    if context.portfolio.positions[context.stock].amount:
-        price = data[context.stock].price
-        context.stop_price = max(context.stop_price, context.stop_pct * price)
+
 def compute_target_weights_and_stop_losses(context, data):
     """
     Compute ordering weights.
@@ -277,7 +309,7 @@ class DailyClassifier(CustomFactor):
         out[:] = bar_types
 class VolumeFilter(CustomFilter):
     def compute(self, today, asset_ids, out, volume):
-        out[:] = volume[0] > 200000
+        out[:] = volume[0] > 400000
 class AlphaLongDaily(CustomFilter):
     def compute(self, today, asset_ids, out, open, high, low, close):
         r = (high[0] - low[0]) / 3
