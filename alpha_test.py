@@ -3,12 +3,13 @@ This is a template algorithm on Quantopian for you to adapt and fill in.
 """
 from quantopian.algorithm import attach_pipeline, pipeline_output
 from quantopian.pipeline import CustomFactor, Pipeline, CustomFilter
+from quantopian.pipeline.data import Fundamentals
 import numpy as np
 from datetime import datetime as DateTime, timedelta as TimeDelta
 from quantopian.pipeline.data.builtin import USEquityPricing
 from pytz import timezone
-from quantopian.pipeline.filters import Q1500US
 import quantopian.optimize as opt
+from quantopian.pipeline.filters import StaticSids
 
 bar_type = {
     'none': 0.0,
@@ -35,6 +36,7 @@ bar_type = {
     64.0: 'theta_minus_final'
 }
 
+headers = 'datetime,signal,symbol,breakout_thresh,breakout_price,stop_loss\r'
 
 def initialize(context):
     """
@@ -48,17 +50,17 @@ def initialize(context):
     context.daily_stat_history = []
     context.positions_stop_loss = {}
     context.positions_max_gain = {}
+    context.position_logs = {}
  #   schedule_function(
  #       open_positions,
  #       date_rules.every_day(),
  #       time_rules.market_open()
  #   )
 
-   # schedule_function(
-   #     close_positions,
-   #     date_rules.every_day(),
-   #     time_rules.market_close(hours=0.5)
-   # )
+    # Record variables at the end of each day.
+    schedule_function(log_trade_info,
+                      date_rules.every_day(),
+                      time_rules.market_close())
 
     # Create our dynamic stock selector.
     attach_pipeline(make_pipeline(), 'my_pipeline')
@@ -69,33 +71,14 @@ def make_pipeline():
     A function to create our dynamic stock selector (pipeline). Documentation on
     pipeline can be found here: https://www.quantopian.com/help#pipeline-title
     """
-    # Base universe set to the Q1500US.
-    base_universe = Q1500US()
-    # alpha_long_daily = AlphaLongDaily(
-    #     inputs=[
-    #         USEquityPricing.open,
-    #         USEquityPricing.high,
-    #         USEquityPricing.low,
-    #         USEquityPricing.close
-    #     ],
-    #     window_length=1,
-    #     mask=base_universe
-    # )
-    # alpha_long_weekly = AlphaLongWeekly(
-    #     inputs=[
-    #         USEquityPricing.open,
-    #         USEquityPricing.high,
-    #         USEquityPricing.low,
-    #         USEquityPricing.close
-    #     ],
-    #     window_length=9,
-    #     mask=base_universe
-    # )
-    volume_filter = VolumeFilter(
-         inputs=[USEquityPricing.volume],
-         window_length=1,
-         mask=base_universe
-     )
+    #exchange = Fundamentals.exchange_id.latest
+    #nyse_filter = exchange.eq('NYS')
+    symbol_filter = StaticSids([sid(8554))])
+   # volume_filter = VolumeFilter(
+   #      inputs=[USEquityPricing.volume],
+  #      window_length=1,
+   #      mask=symbol_filter
+   #  )
 
     # is_setup = volume_filter & alpha_long_weekly & alpha_long_daily
 
@@ -106,12 +89,12 @@ def make_pipeline():
             USEquityPricing.low,
             USEquityPricing.close
         ],
-        mask=volume_filter
+        mask=symbol_filter
 
     )
 
     pipe = Pipeline(
-        screen=volume_filter & (daily_classifier > 0),
+        screen=symbol_filter, #& (daily_classifier > 0),
         columns={
             'daily_classifier': daily_classifier,
             'daily_high': USEquityPricing.high.latest,
@@ -167,29 +150,32 @@ def handle_data(context, data):
     """
 
     exchange_time = get_datetime().astimezone(timezone('US/Eastern'))
+    if exchange_time.hour > 15:
+        return ''
+    if exchange_time.hour == 15 and exchange_time.minute > 45:
+        return ''
    # print exchange_time
-    # TODO
-    #    WE WILL BE LOOKING FOR 3 COINCINDING INDICATORS
-    #    TWO COULD BE CONSIDERED WEEKLY AND DAILY
-    #    THOSE ARE CALCULATED IN THE PIPELINE
-#
-#    iterate through each in pipeline
-#    construct bars as time goes on then check properties of those bars
-#
 
     ##### LOOK FOR NEW POSITIONS TO TAKE ####
 
-    context.longs = []
-    context.shorts = []
     open_orders = get_open_orders()
     current_prices = data.current(context.current_stock_list, 'price')
     for sec in context.current_stock_list:
         if data.can_trade(sec):
-            if sec not in open_orders and sec not in context.portfolio.positions and context.output['daily_classifier'][sec] == bar_type['alpha'] and context.output['daily_high'][sec] < current_prices[sec]:   
-                print 'opening ' + sec.symbol + ' for Alpha thresh_price=' + str(context.output['daily_high'][sec]) + ' triggered_price=' + str(current_prices[sec]) + ' @ '  + str(exchange_time)
+            no_pos_or_orders = sec not in open_orders and sec not in context.portfolio.positions
+            has_alpha_break_out = (context.output['daily_classifier'][sec] == bar_type['alpha'] 
+                                   and context.output['daily_high'][sec] < current_prices[sec])
+            has_traded_today = sec.sid not in context.position_logs
+            if no_pos_or_orders and has_traded_today and has_alpha_break_out:   
+                context.position_logs[sec.sid] = (str(exchange_time)
+                                                  + ',alpha,' 
+                                                  + sec.symbol + ',' 
+                                                  + str(context.output['daily_high'][sec]) + ',' 
+                                                  + str(current_prices[sec]) + ',' 
+                                                  + str(context.output['daily_low'][sec]) + '\r')
                 context.positions_max_gain[sec.sid] = 0
                 context.positions_stop_loss[sec.sid] = context.output['daily_low'][sec]
-                order_target_percent(sec, 0.05)
+                order_target(sec, 1)
 
 
     ##### LOOK AT CURRENT POSITIONS TO DETERMINE IF EXITS ARE NEEDED ####
@@ -199,27 +185,36 @@ def handle_data(context, data):
         # check stop loss
         if pos.sid not in open_orders and pos.sid in current_prices and pos.amount > 0:           
             if current_prices[pos.sid] < context.positions_stop_loss[pos.sid]:
-                print 'exiting ' + pos.sid.symbol + ' due to stop loss at ' + str(context.positions_stop_loss[pos.sid])
-                order_target_percent(pos.sid, 0)
-            # check trailing stop
-            context.positions_max_gain[pos.sid] = max(current_prices[pos.sid], context.positions_max_gain[pos.sid])
-            pct_change = (current_prices[pos.sid] - context.positions_max_gain[pos.sid]) / context.positions_max_gain[pos.sid] 
-            if pct_change < -0.1:
-                print 'exiting ' + pos.sid.symbol + ' due to trailing stop of ' + str(pct_change) + '% off of ' + str(context.positions_max_gain[pos.sid])
-                order_target_percent(pos.sid, 0)
+                order_target(pos.sid, 0)
+                context.position_logs[pos.sid] = (str(exchange_time) 
+                                                  + ',stop loss,' 
+                                                  + pos.sid.symbol + ',' 
+                                                  + str(context.positions_stop_loss[pos.sid]) + ','
+                                                 + str(current_prices[pos.sid]) + '\r')
+                
+            else:
+                # check trailing stop
+                context.positions_max_gain[pos.sid] = max(current_prices[pos.sid], context.positions_max_gain[pos.sid])
+                pct_change = (current_prices[pos.sid] - context.positions_max_gain[pos.sid]) / context.positions_max_gain[pos.sid] 
+                if pct_change < -0.05:
+                    order_target(pos.sid, 0)
+                    context.position_logs[pos.sid] = (str(exchange_time) 
+                                                  + ',trailing stop,' 
+                                                  + pos.sid.symbol + ',' 
+                                                  + str(context.positions_stop_loss[pos.sid]) + ','
+                                                 + str(current_prices[pos.sid]) + ',' 
+                                                 +  str(pct_change)  + '%\r')
+                    
     
-
-    # Calculate target weights to rebalance
-    # compute_target_weights_and_stop_losses(context, data)
-    # # If we have target weights, rebalance our portfolio
-    # if context.target_weights:
-    #     order_optimal_portfolio(
-    #         objective=opt.TargetWeights(context.target_weights),
-    #         constraints=[],
-    #     )
-
-pass
-
+def log_trade_info(context, data):
+    if len(context.position_logs) > 0:
+        main_log = '\n'
+        for log in context.position_logs:
+            main_log += context.position_logs[log]    
+        print main_log
+        context.position_logs = {}
+        
+    
 class DailyClassifier(CustomFactor):
     window_length = 2
 
@@ -242,24 +237,3 @@ class DailyClassifier(CustomFactor):
 class VolumeFilter(CustomFilter):
     def compute(self, today, asset_ids, out, volume):
         out[:] = volume[0] > 400000
-class AlphaLongDaily(CustomFilter):
-    def compute(self, today, asset_ids, out, open, high, low, close):
-        r = (high[0] - low[0]) / 3
-        z = high[0] - r
-        isSetup = (open[0] > z) & (close[0] > z) & (close[0] > open[0])
-        out[:] = isSetup
-class AlphaLongWeekly(CustomFilter):
-    def compute(self, today, asset_ids, out, open, high, low, close):
-        todayDay = today.weekday()
-        endWeekIdx = 8 - todayDay
-        startWeekIdx = 4 - todayDay
-
-        weekOpen = open[startWeekIdx]
-        weekClose = close[endWeekIdx]
-
-        weekHigh = high[startWeekIdx:endWeekIdx, :].max(axis=0)
-        weekLow = low[startWeekIdx:endWeekIdx, :].min(axis=0)
-        r = (weekHigh - weekLow) / 3
-        z = weekHigh - r
-        is_setup = (weekOpen > z) & (weekClose > z) & (weekClose > weekOpen)
-        out[:] = is_setup
