@@ -35,7 +35,8 @@ bar_type = {
     32.0: 'theta_plus_final',
     64.0: 'theta_minus_final'
 }
-
+alpha_divisor = 3
+beta_divisor = 2
 
 def initialize(context):
     """
@@ -380,14 +381,14 @@ class DailyClassifier(CustomFactor):
     window_length = 2
 
     def compute(self, today, asset_ids, out, open, high, low, close):
-        r = (high[-1] - low[-1]) / 3
-        alpha_z = high[-1] - r
+        r_alpha = (high[-1] - low[-1]) / alpha_divisor
+        alpha_z = high[-1] - r_alpha
+        
+        r_beta = (high[-1] - low[-1]) / beta_divisor
         beta_z = low[-1] + r
 
-        is_alpha = (open[-1] > alpha_z) & (close[-1] >
-                                           alpha_z) & (close[-1] > open[-1])
-        is_beta = (open[-1] < beta_z) & (close[-1] <
-                                         beta_z) & (close[-1] < open[-1])
+        is_alpha = (open[-1] > alpha_z) & (close[-1] > alpha_z) #& (close[-1] > open[-1])
+        is_beta = (open[-1] < beta_z) & (close[-1] < beta_z) #& (close[-1] < open[-1])
         is_gamma = (high[-1] < high[0]) & (low[-1] > low[0])
         is_delta = (high[-1] > high[0]) & (low[-1] < low[0])
 

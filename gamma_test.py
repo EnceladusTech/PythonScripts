@@ -35,7 +35,8 @@ bar_type = {
     32.0: 'theta_plus_final',
     64.0: 'theta_minus_final'
 }
-
+alpha_divisor = 3
+beta_divisor = 3
 
 def initialize(context):
     """
@@ -316,22 +317,25 @@ def assess_beta(context, sec, open_orders, current_prices):
         sec].amount > 0
     no_pos_or_orders = sec not in open_orders and ~(
         have_long_pos or have_short_pos)
+    if exchange_time.month == 2:
+        print context.output['daily_classifier'][sec]
     has_beta = context.output['daily_classifier'][sec] == bar_type['beta']
     has_beta_breakout = has_beta and current_prices[sec] < context.output['daily_low'][sec]
     has_traded_today = sec.sid not in context.position_logs
-    if no_pos_or_orders and has_traded_today and has_beta:
-        context.beta_breakout = -1
+    if no_pos_or_orders and has_traded_today and has_beta:        
         if has_beta_breakout:
-            insert_in_log(context, sec, ',' + str(exchange_time)
-                          + ',beta,'
-                          + sec.symbol + ','
-                          + str(context.output['daily_high'][sec]) + ','
-                          + str(current_prices[sec]) + ','
-                          + str(context.output['daily_low'][sec]) + '\r')
-            context.positions_max_gain[sec.sid] = 0
-            context.positions_stop_loss[sec.sid] = context.output['daily_high'][sec]
-            #order_target(sec, -1)
-            order_target_percent(sec, -1)
+            context.beta_breakout = -1
+            if context.trade_beta == True:
+                insert_in_log(context, sec, ',' + str(exchange_time)
+                              + ',beta,'
+                              + sec.symbol + ','
+                              + str(context.output['daily_high'][sec]) + ','
+                              + str(current_prices[sec]) + ','
+                              + str(context.output['daily_low'][sec]) + '\r')
+                context.positions_max_gain[sec.sid] = 0
+                context.positions_stop_loss[sec.sid] = context.output['daily_high'][sec]
+                #order_target(sec, -1)
+                order_target_percent(sec, -1)
     context.beta_bar = -0.5 if ~has_beta_breakout and has_beta else 0
     ##### LOOK TO SEE IF WE HAVE A POSITION AND NEED TO ALTER THE STOP LOSS #####
     ##### THIS WOULD OCCUR IF WE ARE LONG AND RAN INTO ANOTHER ALPHA BAR #####
@@ -380,14 +384,14 @@ class DailyClassifier(CustomFactor):
     window_length = 2
 
     def compute(self, today, asset_ids, out, open, high, low, close):
-        r = (high[-1] - low[-1]) / 3
-        alpha_z = high[-1] - r
-        beta_z = low[-1] + r
+        r_alpha = (high[-1] - low[-1]) / alpha_divisor
+        alpha_z = high[-1] - r_alpha
+        
+        r_beta = (high[-1] - low[-1]) / beta_divisor
+        beta_z = low[-1] + r_beta
 
-        is_alpha = (open[-1] > alpha_z) & (close[-1] >
-                                           alpha_z) & (close[-1] > open[-1])
-        is_beta = (open[-1] < beta_z) & (close[-1] <
-                                         beta_z) & (close[-1] < open[-1])
+        is_alpha = (open[-1] > alpha_z) & (close[-1] > alpha_z) #& (close[-1] > open[-1])
+        is_beta = (open[-1] < beta_z) & (close[-1] < beta_z) #& (close[-1] < open[-1])
         is_gamma = (high[-1] < high[0]) & (low[-1] > low[0])
         is_delta = (high[-1] > high[0]) & (low[-1] < low[0])
 
