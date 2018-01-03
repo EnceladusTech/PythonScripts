@@ -1,6 +1,6 @@
 """
 This is a template algorithm on Quantopian for you to adapt and fill in.
-"""
+""" 
 from quantopian.algorithm import attach_pipeline, pipeline_output
 from quantopian.pipeline import CustomFactor, Pipeline, CustomFilter
 from quantopian.pipeline.data import Fundamentals
@@ -44,7 +44,7 @@ def initialize(context):
     # referencing SPY so the 'handle_data' function will be called every minute
     #context.spy = sid(8554)
 
-    context.trade_gamma_long = True
+    context.trade_gamma_long = False
     context.trade_gamma_short = False
     context.gamma_breakout_long = 0
     context.gamma_breakout_short = 0
@@ -54,7 +54,7 @@ def initialize(context):
     context.alpha_breakout = 0
     context.alpha_bar = 0
 
-    context.trade_beta = False
+    context.trade_beta = True
     context.beta_breakout = 0
     context.beta_bar = 0
 
@@ -170,8 +170,8 @@ def handle_data(context, data):
     for sec in context.current_stock_list:
         if data.can_trade(sec):
             assess_gamma(context, sec, open_orders, current_prices)
-           # assess_alpha(context, sec, open_orders, current_prices)
-           # assess_beta(context, sec, open_orders, current_prices)
+            assess_alpha(context, sec, open_orders, current_prices)
+            assess_beta(context, sec, open_orders, current_prices)
 
     ##### LOOK AT CURRENT POSITIONS TO DETERMINE IF EXITS ARE NEEDED ####
     for pos in context.portfolio.positions.itervalues():
@@ -240,9 +240,9 @@ def assess_gamma(context, sec, open_orders, current_prices):
     has_traded_today = sec.sid not in context.position_logs
     if no_pos_or_orders and has_traded_today and has_gamma:
         if has_gamma_breakout_long:
-            context.gamma_breakout_long = current_prices[sec]
+            context.gamma_breakout_long = 1 #current_prices[sec]
             if context.trade_gamma_long == True:
-                insert_in_log(context, sec, str(exchange_time)
+                insert_in_log(context, sec, ',' + str(exchange_time)
                               + ',gamma long,'
                               + sec.symbol + ','
                               + str(context.output['daily_high'][sec]) + ','
@@ -253,9 +253,9 @@ def assess_gamma(context, sec, open_orders, current_prices):
                 #order_target(sec, 1)
                 order_target_percent(sec, 1)
         if has_gamma_breakout_short:
-            context.gamma_breakout_short = current_prices[sec]
+            context.gamma_breakout_short = -1 #current_prices[sec]
             if context.trade_gamma_short == True:
-                insert_in_log(context, sec, str(exchange_time)
+                insert_in_log(context, sec, ',' + str(exchange_time)
                               + ',gamma short,'
                               + sec.symbol + ','
                               + str(context.output['daily_low'][sec]) + ','
@@ -265,7 +265,7 @@ def assess_gamma(context, sec, open_orders, current_prices):
                 context.positions_stop_loss[sec.sid] = context.output['daily_high'][sec]
                 #order_target(sec, 1)
                 order_target_percent(sec, -1)    
-    context.gamma_bar = current_prices[sec] if (~has_gamma_breakout_long or ~has_gamma_breakout_short) and has_gamma else 0
+    context.gamma_bar = 0.5 if (~has_gamma_breakout_long or ~has_gamma_breakout_short) and has_gamma else 0
 
     ##### LOOK TO SEE IF WE HAVE A POSITION AND NEED TO ALTER THE STOP LOSS #####
     ##### THIS WOULD OCCUR IF WE ARE LONG AND RAN INTO ANOTHER ALPHA BAR #####
@@ -288,9 +288,9 @@ def assess_alpha(context, sec, open_orders, current_prices):
     has_traded_today = sec.sid not in context.position_logs
     if no_pos_or_orders and has_traded_today and has_alpha:
         if has_alpha_breakout:
-            context.alpha_breakout = current_prices[sec]
+            context.alpha_breakout = 1
             if context.trade_alpha == True:
-                insert_in_log(context, sec, str(exchange_time)
+                insert_in_log(context, sec, ',' + str(exchange_time)
                               + ',alpha,'
                               + sec.symbol + ','
                               + str(context.output['daily_high'][sec]) + ','
@@ -300,7 +300,7 @@ def assess_alpha(context, sec, open_orders, current_prices):
                 context.positions_stop_loss[sec.sid] = context.output['daily_low'][sec]
                 #order_target(sec, 1)
                 order_target_percent(sec, 1)
-    context.alpha_bar = current_prices[sec] if ~has_alpha_breakout and has_alpha else 0
+    context.alpha_bar = 0.5 if ~has_alpha_breakout and has_alpha else 0
 
     ##### LOOK TO SEE IF WE HAVE A POSITION AND NEED TO ALTER THE STOP LOSS #####
     ##### THIS WOULD OCCUR IF WE ARE LONG AND RAN INTO ANOTHER ALPHA BAR #####
@@ -320,8 +320,9 @@ def assess_beta(context, sec, open_orders, current_prices):
     has_beta_breakout = has_beta and current_prices[sec] < context.output['daily_low'][sec]
     has_traded_today = sec.sid not in context.position_logs
     if no_pos_or_orders and has_traded_today and has_beta:
+        context.beta_breakout = -1
         if has_beta_breakout:
-            insert_in_log(context, sec, str(exchange_time)
+            insert_in_log(context, sec, ',' + str(exchange_time)
                           + ',beta,'
                           + sec.symbol + ','
                           + str(context.output['daily_high'][sec]) + ','
@@ -329,11 +330,9 @@ def assess_beta(context, sec, open_orders, current_prices):
                           + str(context.output['daily_low'][sec]) + '\r')
             context.positions_max_gain[sec.sid] = 0
             context.positions_stop_loss[sec.sid] = context.output['daily_high'][sec]
-            #order_target(sec, 1)
-            context.has_beta_break_out = current_prices[sec]
-            context.beta_breakout = current_prices[sec]
-            order_target_percent(sec, 1)
-    context.beta_bar = current_prices[sec] if ~has_beta_breakout and has_beta else 0
+            #order_target(sec, -1)
+            order_target_percent(sec, -1)
+    context.beta_bar = -0.5 if ~has_beta_breakout and has_beta else 0
     ##### LOOK TO SEE IF WE HAVE A POSITION AND NEED TO ALTER THE STOP LOSS #####
     ##### THIS WOULD OCCUR IF WE ARE LONG AND RAN INTO ANOTHER ALPHA BAR #####
     if (have_long_pos or have_short_pos) and has_beta and has_beta_breakout and context.trade_beta == True:
@@ -355,11 +354,19 @@ def log_trade_info(context, data):
                 main_log += log_msg
         print main_log
         context.position_logs = {}
-    record(        
-        gamma_breakout_long=context.gamma_breakout_long,
-        gamma_breakout_short=context.gamma_breakout_short,
-        gamma_bar=context.gamma_bar
-    )
+    if context.trade_alpha == True or context.trade_beta == True:
+        record(        
+            alpha_bar=context.alpha_bar,
+            alpha_breakout=context.alpha_breakout,
+            beta_bar=context.beta_bar,
+            beta_breakout = context.beta_breakout
+        )
+    elif context.trade_gamma_long or context.trade_gamma_short:
+        record(        
+            gamma_breakout_long=context.gamma_breakout_long,
+            gamma_breakout_short=context.gamma_breakout_short,
+            gamma_bar=context.gamma_bar
+        )
     context.gamma_breakout_long = 0
     context.gamma_breakout_short = 0
     context.gamma_bar = 0
