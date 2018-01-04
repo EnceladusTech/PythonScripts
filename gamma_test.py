@@ -235,7 +235,9 @@ def assess_gamma(context, sec, open_orders, current_prices):
         sec].amount > 0
     no_pos_or_orders = sec not in open_orders and ~(
         have_long_pos or have_short_pos)
-    has_gamma = context.output['daily_classifier'][sec] == bar_type['gamma']
+    has_gamma = (context.output['daily_classifier'][sec] == bar_type['gamma'] or 
+                context.output['daily_classifier'][sec] == bar_type['gamma_alpha'] or 
+                context.output['daily_classifier'][sec] == bar_type['gamma_beta'])
     has_gamma_breakout_long =  current_prices[sec] > context.output['daily_high'][sec]
     has_gamma_breakout_short = current_prices[sec] < context.output['daily_low'][sec]
     has_traded_today = sec.sid not in context.position_logs
@@ -317,8 +319,6 @@ def assess_beta(context, sec, open_orders, current_prices):
         sec].amount > 0
     no_pos_or_orders = sec not in open_orders and ~(
         have_long_pos or have_short_pos)
-    if exchange_time.month == 2:
-        print context.output['daily_classifier'][sec]
     has_beta = context.output['daily_classifier'][sec] == bar_type['beta']
     has_beta_breakout = has_beta and current_prices[sec] < context.output['daily_low'][sec]
     has_traded_today = sec.sid not in context.position_logs
