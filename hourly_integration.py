@@ -10,7 +10,7 @@ from pytz import timezone
 from zipline.utils.tradingcalendar import get_non_trading_days
 import quantopian.optimize as opt
 from quantopian.pipeline.filters import StaticSids
- 
+
 BAR_TYPE = {
     'none': 0.0,
     'alpha': 2.0,
@@ -50,7 +50,8 @@ TRADING_SID = sid(8554)
 
 START_DATE = TRADING_SID.start_date
 END_DATE = TRADING_SID.end_date
-NON_TRADING_DAYS = get_non_trading_days(START_DATE,END_DATE)
+NON_TRADING_DAYS = get_non_trading_days(START_DATE, END_DATE)
+
 
 def initialize(context):
     """
@@ -79,7 +80,7 @@ def initialize(context):
     context.positions_stop_loss = {}
     context.positions_max_gain = {}
     context.position_logs = {}
-    
+
     # Record variables at the end of each day.
     schedule_function(log_trade_info,
                       date_rules.every_day(),
@@ -98,7 +99,7 @@ def make_pipeline():
     # exchange = Fundamentals.exchange_id.latest
     # nyse_filter = exchange.eq('NYS')
     symbol_filter = StaticSids([TRADING_SID])
-    set_benchmark(TRADING_SID) 
+    set_benchmark(TRADING_SID)
    # volume_filter = VolumeFilter(
    #      inputs=[USEquityPricing.volume],
   #      window_length=1,
@@ -154,7 +155,7 @@ def before_trading_start(context, data):
     """
     context.output = pipeline_output('my_pipeline')
     context.current_stock_list = context.output.index.tolist()
-    #print(context.output['weekly_classifier'])
+    # print(context.output['weekly_classifier'])
     context.daily_stat_history.append(context.output)
     if len(context.daily_stat_history) > 2:  # only keep last two units
         context.daily_stat_history.pop(0)
@@ -196,9 +197,14 @@ def handle_data(context, data):
     exchange_time = get_datetime().astimezone(timezone('US/Eastern'))
     if exchange_time.hour > 15:
         return ''
-    if exchange_time.hour == 15 and exchange_time.minute > 45:
+    if exchange_time.hour == 15 and exchange_time.minute > 50:
         return ''
    # print exchange_time
+
+    opens = data.history(TRADING_SID, "1m", "open_price").resample("60min")
+    highs = data.history(TRADING_SID, "1m", "high").resample("60min")
+    lows = data.history(TRADING_SID, "1m", "low").resample("60min")
+    closes = data.history(TRADING_SID, "1m", "close_price").resample("60min")
 
     ##### LOOK FOR NEW POSITIONS TO TAKE ####
     available_allocation = 1
@@ -213,10 +219,12 @@ def handle_data(context, data):
             #assess_daily_gamma(context, sec, open_orders, current_prices)
             #assess_daily_beta(context, sec, open_orders, current_prices)
             if context.trade_alpha:
-                daily_alpha_sig = assess_daily_alpha(context, sec, open_orders, current_prices, available_allocation)
-                weekly_alpha_sig = assess_weekly_alpha(context, sec, open_orders, current_prices, available_allocation)                
+                daily_alpha_sig = assess_daily_alpha(
+                    context, sec, open_orders, current_prices, available_allocation)
+                weekly_alpha_sig = assess_weekly_alpha(
+                    context, sec, open_orders, current_prices, available_allocation)
                 total_signal = daily_alpha_sig + weekly_alpha_sig
-            
+
     ##### LOOK AT CURRENT POSITIONS TO DETERMINE IF EXITS ARE NEEDED ####
     for pos in context.portfolio.positions.itervalues():
         # check stop loss
@@ -361,11 +369,13 @@ def assess_daily_alpha(context, sec, open_orders, current_prices, available_allo
     """
     to_return = 0
     exchange_time = get_datetime().astimezone(timezone('US/Eastern'))
-    have_short_pos = sec in context.portfolio.positions and context.portfolio.positions[sec].amount < 0
-    have_long_pos = sec in context.portfolio.positions and context.portfolio.positions[sec].amount > 0
+    have_short_pos = sec in context.portfolio.positions and context.portfolio.positions[
+        sec].amount < 0
+    have_long_pos = sec in context.portfolio.positions and context.portfolio.positions[
+        sec].amount > 0
     #no_pos_or_orders = sec not in open_orders and not (have_long_pos or have_short_pos)
     has_alpha = context.output['daily_classifier'][sec] == BAR_TYPE['alpha']
-    
+
     has_alpha_daily_breakout = context.output['daily_high'][sec] < current_prices[sec]
     not_traded_today = sec.sid not in context.position_logs
     if not_traded_today and has_alpha:
@@ -374,11 +384,11 @@ def assess_daily_alpha(context, sec, open_orders, current_prices, available_allo
             to_return = 1
             if available_allocation != 0:
                 insert_in_log(context, sec, ',' + str(exchange_time)
-                                  + ',alpha daily,'
-                                  + sec.symbol + ','
-                                  + str(context.output['daily_high'][sec]) + ','
-                                  + str(current_prices[sec]) + ','
-                                  + str(context.output['daily_low'][sec]) + '\r')
+                              + ',alpha daily,'
+                              + sec.symbol + ','
+                              + str(context.output['daily_high'][sec]) + ','
+                              + str(current_prices[sec]) + ','
+                              + str(context.output['daily_low'][sec]) + '\r')
                 context.positions_max_gain[sec.sid] = 0
                 context.positions_stop_loss[sec.sid] = context.output['daily_low'][sec]
                 # order_target(sec, 1)
@@ -392,8 +402,8 @@ def assess_daily_alpha(context, sec, open_orders, current_prices, available_allo
         context.positions_stop_loss[sec.sid] = context.output['daily_low'][sec]
 
     return to_return
-    
-    
+
+
 def assess_weekly_alpha(context, sec, open_orders, current_prices, available_allocation):
     """
     Assess weekly alpha
@@ -415,11 +425,11 @@ def assess_weekly_alpha(context, sec, open_orders, current_prices, available_all
             to_return = 1
             if available_allocation != 0:
                 insert_in_log(context, sec, ',' + str(exchange_time)
-                                  + ',alpha weekly,'
-                                  + sec.symbol + ','
-                                  + str(context.output['weekly_high'][sec]) + ','
-                                  + str(current_prices[sec]) + ','
-                                  + str(context.output['weekly_low'][sec]) + '\r')
+                              + ',alpha weekly,'
+                              + sec.symbol + ','
+                              + str(context.output['weekly_high'][sec]) + ','
+                              + str(current_prices[sec]) + ','
+                              + str(context.output['weekly_low'][sec]) + '\r')
                 context.positions_max_gain[sec.sid] = 0
                 context.positions_stop_loss[sec.sid] = context.output['weekly_low'][sec]
                 # order_target(sec, 1)
@@ -432,6 +442,7 @@ def assess_weekly_alpha(context, sec, open_orders, current_prices, available_all
     if (have_long_pos or have_short_pos) and has_alpha_weekly and has_alpha_weekly_breakout:
         context.positions_stop_loss[sec.sid] = context.output['weekly_low'][sec]
     return to_return
+
 
 def assess_daily_beta(context, sec, open_orders, current_prices):
     """
@@ -494,7 +505,7 @@ def log_trade_info(context, data):
             alpha_daily_bar=context.alpha_daily_bar,
             alpha_daily_breakout=context.alpha_daily_breakout,
             alpha_weekly_bar=context.alpha_weekly_bar,
-            alpha_weekly_breakout = context.alpha_weekly_breakout
+            alpha_weekly_breakout=context.alpha_weekly_breakout
         )
     elif context.trade_beta:
         record(
@@ -558,17 +569,16 @@ class WeeklyClassifier(CustomFactor):
     def compute(self, today, asset_ids, out, open, high, low, close):
         """
             Do weekly classification
-        """        
-        
+        """
+
         today_day = today.weekday()
-        
-       
+
         current_end_week_idx = -today_day - 1
         current_start_week_idx = -today_day - 5
-        
+
         prev_end_week_idx = -today_day - 6
         prev_start_week_idx = -today_day - 10
-        
+
         day_idx = today
         week_count = 0
         # key off of transitions from 0 to 4
@@ -581,9 +591,9 @@ class WeeklyClassifier(CustomFactor):
                 factor = prev_day - new_day + 4
             else:
                 factor = prev_day - new_day - 1
-                
+
             # check for closings on a monday of week
-            
+
             if num >= current_end_week_idx:
                 if prev_day == 0 and new_day == 4:
                     current_end_week_idx = current_end_week_idx + factor
@@ -593,24 +603,22 @@ class WeeklyClassifier(CustomFactor):
                 if prev_day == 0 and new_day == 4 or num >= current_end_week_idx:
                     prev_end_week_idx = prev_end_week_idx + factor
             if num >= prev_start_week_idx:
-                    prev_start_week_idx = prev_start_week_idx + factor
+                prev_start_week_idx = prev_start_week_idx + factor
 
-        
         current_week_open = open[current_start_week_idx]
         current_week_close = close[current_end_week_idx]
-        
-        
+
         if current_end_week_idx == -1:
             current_week_high = high[current_start_week_idx:, :].max(
-            axis=0)
+                axis=0)
             current_week_low = low[current_start_week_idx:, :].min(
-            axis=0)
-        else: 
+                axis=0)
+        else:
             current_week_high = high[current_start_week_idx:current_end_week_idx + 1, :].max(
-            axis=0)
+                axis=0)
 
             current_week_low = low[current_start_week_idx:current_end_week_idx + 1, :].min(
-            axis=0)
+                axis=0)
 
        # prev_week_open = open[prev_start_week_idx]
        # prev_week_close = close[prev_end_week_idx]
@@ -686,6 +694,7 @@ class VolumeFilter(CustomFilter):
     """
     Filter by volume
     """
+
     def compute(self, today, asset_ids, out, volume):
         """
         Compare volume

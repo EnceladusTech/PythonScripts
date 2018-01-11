@@ -7,10 +7,9 @@ from quantopian.pipeline.data import Fundamentals
 import numpy as np
 from quantopian.pipeline.data.builtin import USEquityPricing
 from pytz import timezone
-from zipline.utils.tradingcalendar import get_non_trading_days
 import quantopian.optimize as opt
 from quantopian.pipeline.filters import StaticSids
- 
+
 BAR_TYPE = {
     'none': 0.0,
     'alpha': 2.0,
@@ -46,11 +45,6 @@ TRAILING_STOP_PCT = 0.02
 USE_TAKE_PROFIT_EXIT = False
 TAKE_PROFIT_EXIT_PCT = 0.01
 
-TRADING_SID = sid(8554)
-
-START_DATE = TRADING_SID.start_date
-END_DATE = TRADING_SID.end_date
-NON_TRADING_DAYS = get_non_trading_days(START_DATE,END_DATE)
 
 def initialize(context):
     """
@@ -75,11 +69,13 @@ def initialize(context):
     context.beta_daily_breakout = 0
     context.beta_daily_bar = 0
 
-    context.daily_stat_history = []
     context.positions_stop_loss = {}
     context.positions_max_gain = {}
     context.position_logs = {}
-    
+
+    context.daily_stat_history = []
+    context.hourly_data = {}
+
     # Record variables at the end of each day.
     schedule_function(log_trade_info,
                       date_rules.every_day(),
@@ -95,24 +91,23 @@ def make_pipeline():
     A function to create our dynamic stock selector (pipeline). Documentation on
     pipeline can be found here: https://www.quantopian.com/help#pipeline-title
     """
-    # exchange = Fundamentals.exchange_id.latest
-    # nyse_filter = exchange.eq('NYS')
-    symbol_filter = StaticSids([TRADING_SID])
-    set_benchmark(TRADING_SID) 
-   # volume_filter = VolumeFilter(
-   #      inputs=[USEquityPricing.volume],
-  #      window_length=1,
-   #      mask=symbol_filter
-   #  )
+   # exchange = Fundamentals.exchange_id.latest
+   # nyse_filter = exchange.eq('NYS')
+
+    volume_filter = VolumeFilter(
+        inputs=[USEquityPricing.volume],
+        window_length=1#,
+        #mask=nyse_filter
+    )
 
     # is_setup = volume_filter & alpha_long_weekly & alpha_long_daily
     weekly_high = WeeklyHigh(
         inputs=[USEquityPricing.high],
-        mask=symbol_filter
+        mask=volume_filter
     )
     weekly_low = WeeklyLow(
         inputs=[USEquityPricing.low],
-        mask=symbol_filter
+        mask=volume_filter
     )
     weekly_classifier = WeeklyClassifier(
         inputs=[
@@ -121,25 +116,51 @@ def make_pipeline():
             USEquityPricing.low,
             USEquityPricing.close
         ],
-        mask=symbol_filter
+        mask=volume_filter
     )
-    daily_classifier = DailyClassifier(
+    # daily_classifier = DailyClassifier(
+    #     inputs=[
+    #         USEquityPricing.open,
+    #         USEquityPricing.high,
+    #         USEquityPricing.low,
+    #         USEquityPricing.close
+    #     ],
+    #     mask=volume_filter
+
+    # )
+    # monthly_high = MonthlyHigh(
+    #     inputs=[USEquityPricing.high],
+    #     mask=volume_filter
+    # )
+    # monthly_low = MonthlyLow(
+    #     inputs=[USEquityPricing.low],
+    #     mask=volume_filter
+    # )
+    # monthly_classifier = MonthlyClassifier(
+    #     inputs=[
+    #         USEquityPricing.open,
+    #         USEquityPricing.high,
+    #         USEquityPricing.low,
+    #         USEquityPricing.close
+    #     ],
+    #     mask=volume_filter
+    # )
+    current_inside_month_classifier = CurrentInsideMonthClassifier(
         inputs=[
-            USEquityPricing.open,
             USEquityPricing.high,
-            USEquityPricing.low,
-            USEquityPricing.close
+            USEquityPricing.low
         ],
-        mask=symbol_filter
-
+        mask=volume_filter
     )
-
     pipe = Pipeline(
-        screen=symbol_filter,  # & (daily_classifier > 0),
+        screen=(current_inside_month_classifier &
+                (weekly_classifier == BAR_TYPE['gamma'] or
+                 weekly_classifier == BAR_TYPE['gamma_alpha'] or
+                 weekly_classifier == BAR_TYPE['gamma_beta'])),
         columns={
-            'daily_classifier': daily_classifier,
-            'daily_high': USEquityPricing.high.latest,
-            'daily_low': USEquityPricing.low.latest,
+            # 'daily_classifier': daily_classifier,
+            # 'daily_high': USEquityPricing.high.latest,
+            # 'daily_low': USEquityPricing.low.latest,
             'weekly_classifier': weekly_classifier,
             'weekly_high': weekly_high,
             'weekly_low': weekly_low
@@ -154,7 +175,7 @@ def before_trading_start(context, data):
     """
     context.output = pipeline_output('my_pipeline')
     context.current_stock_list = context.output.index.tolist()
-    #print(context.output['weekly_classifier'])
+    print(len(context.current_stock_list))
     context.daily_stat_history.append(context.output)
     if len(context.daily_stat_history) > 2:  # only keep last two units
         context.daily_stat_history.pop(0)
@@ -196,108 +217,43 @@ def handle_data(context, data):
     exchange_time = get_datetime().astimezone(timezone('US/Eastern'))
     if exchange_time.hour > 15:
         return ''
-    if exchange_time.hour == 15 and exchange_time.minute > 45:
+    if exchange_time.hour == 15 and exchange_time.minute > 50:
         return ''
    # print exchange_time
+    if len(context.current_stock_list) == 0:
+        return ''
 
-    ##### LOOK FOR NEW POSITIONS TO TAKE ####
-    available_allocation = 1
-    for val in context.portfolio.current_portfolio_weights:
-        available_allocation = available_allocation - val
-    available_allocation = round(available_allocation, 2)
-    open_orders = get_open_orders()
+    today_open = data.history(context.current_stock_list, "open", 1, "1d")
     current_prices = data.current(context.current_stock_list, 'price')
     for sec in context.current_stock_list:
-        if data.can_trade(sec):
-            total_signal = 0
-            #assess_daily_gamma(context, sec, open_orders, current_prices)
-            #assess_daily_beta(context, sec, open_orders, current_prices)
-            if context.trade_alpha:
-                daily_alpha_sig = assess_daily_alpha(context, sec, open_orders, current_prices, available_allocation)
-                weekly_alpha_sig = assess_weekly_alpha(context, sec, open_orders, current_prices, available_allocation)                
-                total_signal = daily_alpha_sig + weekly_alpha_sig
-            
-    ##### LOOK AT CURRENT POSITIONS TO DETERMINE IF EXITS ARE NEEDED ####
-    for pos in context.portfolio.positions.itervalues():
-        # check stop loss
-        exit_occurred = False
-        if pos.sid not in open_orders and pos.sid in current_prices:
-            if pos.amount > 0:
-                if USE_STOP_LOSS_EXIT and current_prices[pos.sid] < context.positions_stop_loss[pos.sid]:
-                    # order_target(pos.sid, 0)
-                    order_target_percent(pos.sid, 0)
-                    exit_occurred = True
-                    insert_in_log(context, pos, ',' + str(exchange_time)
-                                  + ',stop loss,'
-                                  + pos.sid.symbol + ','
-                                  + str(context.positions_stop_loss[pos.sid]) + ','
-                                  + str(current_prices[pos.sid]) + '\r')
-                if USE_TRAILING_STOP_EXIT and ~exit_occurred:
-                    # check trailing stop
-                    context.positions_max_gain[pos.sid] = max(
-                        current_prices[pos.sid], context.positions_max_gain[pos.sid])
-                    pct_change = (
-                        current_prices[pos.sid] - context.positions_max_gain[pos.sid]) / context.positions_max_gain[pos.sid]
-                    if pct_change < -TRAILING_STOP_PCT:
-                        # order_target(pos.sid, 0)
-                        order_target_percent(pos.sid, 0)
-                        exit_occurred = True
-                        insert_in_log(context, pos, ',' + str(exchange_time)
-                                      + ',trailing stop,'
-                                      + pos.sid.symbol + ','
-                                      + str(context.positions_stop_loss[pos.sid]) + ','
-                                      + str(current_prices[pos.sid]) + ','
-                                      + str(pct_change) + '%\r')
-                if USE_TAKE_PROFIT_EXIT:
-                    pct_change = (
-                        current_prices[pos.sid] - pos.cost_basis) / pos.cost_basis
-                    if pct_change >= TAKE_PROFIT_EXIT_PCT:
-                        # order_target(pos.sid, 0)
-                        order_target_percent(pos.sid, 0)
-                        exit_occurred = True
-                        insert_in_log(context, pos, ',' + str(exchange_time)
-                                      + ',take profit,'
-                                      + pos.sid.symbol + ','
-                                      + str(context.positions_stop_loss[pos.sid]) + ','
-                                      + str(current_prices[pos.sid]) + ','
-                                      + str(pct_change) + '%\r')
-            elif pos.amount < 0:
-                if USE_STOP_LOSS_EXIT and current_prices[pos.sid] > context.positions_stop_loss[pos.sid]:
-                    # order_target(pos.sid, 0)
-                    order_target_percent(pos.sid, 0)
-                    insert_in_log(context, pos, ',' + str(exchange_time)
-                                  + ',stop loss,'
-                                  + pos.sid.symbol + ','
-                                  + str(context.positions_stop_loss[pos.sid]) + ','
-                                  + str(current_prices[pos.sid]) + '\r')
-                if USE_TRAILING_STOP_EXIT:  # check trailing stop
-                    context.positions_max_gain[pos.sid] = max(
-                        current_prices[pos.sid], context.positions_max_gain[pos.sid])
-                    pct_change = (
-                        current_prices[pos.sid] - context.positions_max_gain[pos.sid]) / context.positions_max_gain[pos.sid]
-                    if pct_change < -TRAILING_STOP_PCT:
-                        # order_target(pos.sid, 0)
-                        order_target_percent(pos.sid, 0)
-                        insert_in_log(context, pos, ',' + str(exchange_time)
-                                      + ',trailing stop,'
-                                      + pos.sid.symbol + ','
-                                      + str(context.positions_stop_loss[pos.sid]) + ','
-                                      + str(current_prices[pos.sid]) + ','
-                                      + str(pct_change) + '%\r')
-                if USE_TAKE_PROFIT_EXIT:
-                    pct_change = (
-                        current_prices[pos.sid] - pos.cost_basis) / pos.cost_basis
-                    if pct_change <= -TAKE_PROFIT_EXIT_PCT:
-                        # order_target(pos.sid, 0)
-                        order_target_percent(pos.sid, 0)
-                        exit_occurred = True
-                        insert_in_log(context, pos, ',' + str(exchange_time)
-                                      + ',take profit,'
-                                      + pos.sid.symbol + ','
-                                      + str(context.positions_stop_loss[pos.sid]) + ','
-                                      + str(current_prices[pos.sid]) + ','
-                                      + str(pct_change) + '%\r')
+        # build intraday bars
+        if exchange_time.hour > 9 and exchange_time.minute == 31:
+            # time_stamp = '{:02d}'.format(
+                # exchange_time.hour) + '{:02d}'.format(exchange_time.minute - 1)
+            if sec not in context.hourly_data:
+                context.hourly_data[sec] = {}
+            opens = data.history(
+                context.current_stock_list, "open", 61, "1m", )
+            highs = data.history(
+                context.current_stock_list, "high", 61, "1m", )
+            lows = data.history(context.current_stock_list, "low", 61, "1m", )
+            closes = data.history(
+                context.current_stock_list, "close", 61, "1m", )
+            high = highs[:-1].max()
+            low = lows[:-1].min()
+            context.hourly_data[sec][exchange_time] = [
+                opens[0], high, low, closes[-2]]
 
+        # Should have inside weeks at this point
+        # make sure we have a full 60 min bar before executing below
+        
+        # make sure we're trading above the daily open
+        if current_prices[sec] > today_open[sec][0]:
+            # make sure we're trading 
+            if current_prices[sec] > context.output['monthly_high'][sec]:
+                # we've broken out of the week now test the hour
+                if sec in context.hourly_data:
+                    print(context.hourly_data[sec])
 
 def assess_daily_gamma(context, sec, open_orders, current_prices):
     """
@@ -361,11 +317,13 @@ def assess_daily_alpha(context, sec, open_orders, current_prices, available_allo
     """
     to_return = 0
     exchange_time = get_datetime().astimezone(timezone('US/Eastern'))
-    have_short_pos = sec in context.portfolio.positions and context.portfolio.positions[sec].amount < 0
-    have_long_pos = sec in context.portfolio.positions and context.portfolio.positions[sec].amount > 0
+    have_short_pos = sec in context.portfolio.positions and context.portfolio.positions[
+        sec].amount < 0
+    have_long_pos = sec in context.portfolio.positions and context.portfolio.positions[
+        sec].amount > 0
     #no_pos_or_orders = sec not in open_orders and not (have_long_pos or have_short_pos)
     has_alpha = context.output['daily_classifier'][sec] == BAR_TYPE['alpha']
-    
+
     has_alpha_daily_breakout = context.output['daily_high'][sec] < current_prices[sec]
     not_traded_today = sec.sid not in context.position_logs
     if not_traded_today and has_alpha:
@@ -374,11 +332,11 @@ def assess_daily_alpha(context, sec, open_orders, current_prices, available_allo
             to_return = 1
             if available_allocation != 0:
                 insert_in_log(context, sec, ',' + str(exchange_time)
-                                  + ',alpha daily,'
-                                  + sec.symbol + ','
-                                  + str(context.output['daily_high'][sec]) + ','
-                                  + str(current_prices[sec]) + ','
-                                  + str(context.output['daily_low'][sec]) + '\r')
+                              + ',alpha daily,'
+                              + sec.symbol + ','
+                              + str(context.output['daily_high'][sec]) + ','
+                              + str(current_prices[sec]) + ','
+                              + str(context.output['daily_low'][sec]) + '\r')
                 context.positions_max_gain[sec.sid] = 0
                 context.positions_stop_loss[sec.sid] = context.output['daily_low'][sec]
                 # order_target(sec, 1)
@@ -392,8 +350,8 @@ def assess_daily_alpha(context, sec, open_orders, current_prices, available_allo
         context.positions_stop_loss[sec.sid] = context.output['daily_low'][sec]
 
     return to_return
-    
-    
+
+
 def assess_weekly_alpha(context, sec, open_orders, current_prices, available_allocation):
     """
     Assess weekly alpha
@@ -415,11 +373,11 @@ def assess_weekly_alpha(context, sec, open_orders, current_prices, available_all
             to_return = 1
             if available_allocation != 0:
                 insert_in_log(context, sec, ',' + str(exchange_time)
-                                  + ',alpha weekly,'
-                                  + sec.symbol + ','
-                                  + str(context.output['weekly_high'][sec]) + ','
-                                  + str(current_prices[sec]) + ','
-                                  + str(context.output['weekly_low'][sec]) + '\r')
+                              + ',alpha weekly,'
+                              + sec.symbol + ','
+                              + str(context.output['weekly_high'][sec]) + ','
+                              + str(current_prices[sec]) + ','
+                              + str(context.output['weekly_low'][sec]) + '\r')
                 context.positions_max_gain[sec.sid] = 0
                 context.positions_stop_loss[sec.sid] = context.output['weekly_low'][sec]
                 # order_target(sec, 1)
@@ -432,6 +390,7 @@ def assess_weekly_alpha(context, sec, open_orders, current_prices, available_all
     if (have_long_pos or have_short_pos) and has_alpha_weekly and has_alpha_weekly_breakout:
         context.positions_stop_loss[sec.sid] = context.output['weekly_low'][sec]
     return to_return
+
 
 def assess_daily_beta(context, sec, open_orders, current_prices):
     """
@@ -494,7 +453,7 @@ def log_trade_info(context, data):
             alpha_daily_bar=context.alpha_daily_bar,
             alpha_daily_breakout=context.alpha_daily_breakout,
             alpha_weekly_bar=context.alpha_weekly_bar,
-            alpha_weekly_breakout = context.alpha_weekly_breakout
+            alpha_weekly_breakout=context.alpha_weekly_breakout
         )
     elif context.trade_beta:
         record(
@@ -558,17 +517,16 @@ class WeeklyClassifier(CustomFactor):
     def compute(self, today, asset_ids, out, open, high, low, close):
         """
             Do weekly classification
-        """        
-        
+        """
+
         today_day = today.weekday()
-        
-       
+
         current_end_week_idx = -today_day - 1
         current_start_week_idx = -today_day - 5
-        
+
         prev_end_week_idx = -today_day - 6
         prev_start_week_idx = -today_day - 10
-        
+
         day_idx = today
         week_count = 0
         # key off of transitions from 0 to 4
@@ -581,9 +539,9 @@ class WeeklyClassifier(CustomFactor):
                 factor = prev_day - new_day + 4
             else:
                 factor = prev_day - new_day - 1
-                
+
             # check for closings on a monday of week
-            
+
             if num >= current_end_week_idx:
                 if prev_day == 0 and new_day == 4:
                     current_end_week_idx = current_end_week_idx + factor
@@ -593,24 +551,22 @@ class WeeklyClassifier(CustomFactor):
                 if prev_day == 0 and new_day == 4 or num >= current_end_week_idx:
                     prev_end_week_idx = prev_end_week_idx + factor
             if num >= prev_start_week_idx:
-                    prev_start_week_idx = prev_start_week_idx + factor
+                prev_start_week_idx = prev_start_week_idx + factor
 
-        
         current_week_open = open[current_start_week_idx]
         current_week_close = close[current_end_week_idx]
-        
-        
+
         if current_end_week_idx == -1:
             current_week_high = high[current_start_week_idx:, :].max(
-            axis=0)
+                axis=0)
             current_week_low = low[current_start_week_idx:, :].min(
-            axis=0)
-        else: 
+                axis=0)
+        else:
             current_week_high = high[current_start_week_idx:current_end_week_idx + 1, :].max(
-            axis=0)
+                axis=0)
 
             current_week_low = low[current_start_week_idx:current_end_week_idx + 1, :].min(
-            axis=0)
+                axis=0)
 
        # prev_week_open = open[prev_start_week_idx]
        # prev_week_close = close[prev_end_week_idx]
@@ -682,12 +638,332 @@ class WeeklyLow(CustomFactor):
         out[:] = current_week_low
 
 
+class MonthlyClassifier(CustomFactor):
+    """
+    Classifiy monthly bars
+    """
+    window_length = 92
+
+    def compute(self, today, asset_ids, out, open, high, low, close):
+        """
+            Do monthly classification
+        """
+
+     #   day_of_month = today.day
+      #  if day_of_month != 1:
+      #      return
+
+        start_month = today.month
+        current_month = start_month - 1 if start_month - 1 > 0 else 12
+        prev_month = current_month - 1 if current_month - 1 > 0 else 12
+        idx = -1
+        date_idx = today - 1
+        month_idx = date_idx.month
+
+        current_end_month_idx = 0
+        current_start_month_idx = 0
+
+        prev_end_month_idx = 0
+        prev_start_month_idx = 0
+
+        while idx > -MonthlyClassifier.window_length:
+            if month_idx == current_month:
+                if current_end_month_idx == 0:
+                    current_end_month_idx = idx
+            if month_idx == prev_month:
+                if current_start_month_idx == 0:
+                    current_start_month_idx = idx + 1
+
+                if prev_end_month_idx == 0:
+                    prev_end_month_idx = idx
+
+            if month_idx not in [start_month, current_month, prev_month]:
+                if prev_start_month_idx == 0:
+                    prev_start_month_idx = idx
+
+            date_idx = date_idx - 1
+            month_idx = date_idx.month
+            idx = idx - 1
+
+        current_month_open = open[current_start_month_idx]
+        current_month_close = close[current_end_month_idx]
+
+        if current_end_month_idx == -1:
+            current_month_high = high[current_start_month_idx:, :].max(
+                axis=0)
+            current_month_low = low[current_start_month_idx:, :].min(
+                axis=0)
+        else:
+            current_month_high = high[current_start_month_idx:current_end_month_idx + 1, :].max(
+                axis=0)
+
+            current_month_low = low[current_start_month_idx:current_end_month_idx + 1, :].min(
+                axis=0)
+       # prev_month_open = open[prev_start_month_idx]
+       # prev_month_close = close[prev_end_month_idx]
+
+        prev_month_high = high[prev_start_month_idx:
+                               prev_end_month_idx + 1, :].max(axis=0)
+        prev_month_low = low[prev_start_month_idx:
+                             prev_end_month_idx + 1, :].min(axis=0)
+
+        r_alpha = (current_month_high - current_month_low) / ALPHA_DIVISOR
+        alpha_z = current_month_high - r_alpha
+
+        r_beta = (current_month_high - current_month_low) / BETA_DIVISOR
+        beta_z = current_month_low + r_beta
+
+        # & (current_month_close[-1] > current_month_open[-1])
+        is_alpha = (current_month_open > alpha_z) & (
+            current_month_close > alpha_z)
+        # & (current_month_close[-1] < current_month_open[-1])
+        is_beta = (current_month_open < beta_z) & (
+            current_month_close < beta_z)
+        is_gamma = (prev_month_high < current_month_high) & (
+            prev_month_low > current_month_low)
+        is_delta = (prev_month_high > current_month_high) & (
+            prev_month_low < current_month_low)
+
+        bar_types = [0] * len(open[-1])
+        bar_types = (is_alpha << 1) + bar_types
+        bar_types = (is_beta << 2) + bar_types
+        bar_types = (is_gamma << 3) + bar_types
+        bar_types = (is_delta << 4) + bar_types
+        out[:] = bar_types
+
+class CurrentInsideMonthClassifier(CustomFactor):
+    """
+    Determine if current month is trading within prev months range
+    """
+    window_length = 61
+
+    def compute(self, today, asset_ids, out, high, low):
+        """
+            Determine if current month is trading within prev months range
+        """
+
+     #   day_of_month = today.day
+      #  if day_of_month != 1:
+      #      return
+
+        start_month = today.month
+        current_month = start_month - 1 if start_month - 1 > 0 else 12
+        prev_month = current_month - 1 if current_month - 1 > 0 else 12
+        idx = -1
+        date_idx = today - 1
+        month_idx = date_idx.month
+
+        current_end_month_idx = 0
+        current_start_month_idx = 0
+
+        prev_end_month_idx = 0
+        prev_start_month_idx = 0
+
+        while idx > -MonthlyClassifier.window_length:
+            if month_idx == current_month:
+                if current_end_month_idx == 0:
+                    current_end_month_idx = idx
+            if month_idx == prev_month:
+                if current_start_month_idx == 0:
+                    current_start_month_idx = idx + 1
+
+                if prev_end_month_idx == 0:
+                    prev_end_month_idx = idx
+
+            if month_idx not in [start_month, current_month, prev_month]:
+                if prev_start_month_idx == 0:
+                    prev_start_month_idx = idx
+
+            date_idx = date_idx - 1
+            month_idx = date_idx.month
+            idx = idx - 1
+
+        if current_end_month_idx == -1:
+            current_month_high = high[current_start_month_idx:, :].max(
+                axis=0)
+            current_month_low = low[current_start_month_idx:, :].min(
+                axis=0)
+        else:
+            current_month_high = high[current_start_month_idx:current_end_month_idx + 1, :].max(
+                axis=0)
+
+            current_month_low = low[current_start_month_idx:current_end_month_idx + 1, :].min(
+                axis=0)
+
+        start_month_high = high[current_end_month_idx:, :].max(axis=0)
+        start_month_low = low[current_end_month_idx:, :].min(axis=0)
+        out[:] = start_month_high > current_month_high | start_month_low < current_month_low
+
+
+class MonthlyHigh(CustomFactor):
+    """
+    Get the high for the week
+    """
+    window_length = 32
+
+    def compute(self, today, asset_ids, out, high):
+        """
+            Get the high for the week
+        """
+        start_month = today.month
+        current_month = start_month - 1 if start_month - 1 > 0 else 12
+        prev_month = current_month - 1 if current_month - 1 > 0 else 12
+        idx = -1
+        date_idx = today - 1
+        month_idx = date_idx.month
+
+        current_end_month_idx = 0
+        current_start_month_idx = 0
+
+        while idx > -MonthlyClassifier.window_length:
+            if month_idx == current_month:
+                if current_end_month_idx == 0:
+                    current_end_month_idx = idx
+            if month_idx == prev_month:
+                if current_start_month_idx == 0:
+                    current_start_month_idx = idx + 1
+
+            date_idx = date_idx - 1
+            month_idx = date_idx.month
+            idx = idx - 1
+
+        if current_end_month_idx == -1:
+            current_month_high = high[current_start_month_idx:, :].max(
+                axis=0)
+            # current_month_low = low[current_start_month_idx:, :].min(axis=0)
+        else:
+            current_month_high = high[current_start_month_idx:current_end_month_idx + 1, :].max(
+                axis=0)
+
+           # current_month_low = low[current_start_month_idx:current_end_month_idx + 1, :].min(axis=0)
+        out[:] = current_month_high
+
+
+class MonthlyLow(CustomFactor):
+    """
+    Get the low for the month
+    """
+    window_length = 32
+
+    def compute(self, today, asset_ids, out, low):
+        """
+            Get the low for the month
+        """
+        start_month = today.month
+        current_month = start_month - 1 if start_month - 1 > 0 else 12
+        prev_month = current_month - 1 if current_month - 1 > 0 else 12
+        idx = -1
+        date_idx = today - 1
+        month_idx = date_idx.month
+
+        current_end_month_idx = 0
+        current_start_month_idx = 0
+
+        while idx > -MonthlyClassifier.window_length:
+            if month_idx == current_month:
+                if current_end_month_idx == 0:
+                    current_end_month_idx = idx
+            if month_idx == prev_month:
+                if current_start_month_idx == 0:
+                    current_start_month_idx = idx + 1
+
+            date_idx = date_idx - 1
+            month_idx = date_idx.month
+            idx = idx - 1
+
+        if current_end_month_idx == -1:
+           # current_month_high = high[current_start_month_idx:, :].max(axis=0)
+            current_month_low = low[current_start_month_idx:, :].min(axis=0)
+        else:
+            # current_month_high = high[current_start_month_idx:current_end_month_idx + 1, :].max(axis=0)
+            current_month_low = low[current_start_month_idx:
+                                    current_end_month_idx + 1, :].min(axis=0)
+        out[:] = current_month_low
+
+class MonthlyCurrentLow(CustomFactor):
+    """
+    Get the low for the current incomplete monthly bar
+    """
+    window_length = 32
+
+    def compute(self, today, asset_ids, out, low):
+        """
+            Compute the low for the current incomplete monthly bar
+        """
+        start_month = today.month
+        current_month = start_month - 1 if start_month - 1 > 0 else 12
+        prev_month = current_month - 1 if current_month - 1 > 0 else 12
+        idx = -1
+        date_idx = today - 1
+        month_idx = date_idx.month
+
+        current_end_month_idx = 0
+        current_start_month_idx = 0
+
+        while idx > -MonthlyClassifier.window_length:
+            if month_idx == current_month:
+                if current_end_month_idx == 0:
+                    current_end_month_idx = idx
+            if month_idx == prev_month:
+                if current_start_month_idx == 0:
+                    current_start_month_idx = idx + 1
+
+            date_idx = date_idx - 1
+            month_idx = date_idx.month
+            idx = idx - 1
+
+
+        # current_month_high = high[current_end_month_idx:, :].max(axis=0)
+        start_month_low = low[current_end_month_idx:, :].min(axis=0)
+
+        out[:] = start_month_low
+
+class MonthlyCurrentHigh(CustomFactor):
+    """
+    Get the low for the current incomplete monthly bar
+    """
+    window_length = 32
+
+    def compute(self, today, asset_ids, out, high):
+        """
+            Compute the low for the current incomplete monthly bar
+        """
+        start_month = today.month
+        current_month = start_month - 1 if start_month - 1 > 0 else 12
+        prev_month = current_month - 1 if current_month - 1 > 0 else 12
+        idx = -1
+        date_idx = today - 1
+        month_idx = date_idx.month
+
+        current_end_month_idx = 0
+        current_start_month_idx = 0
+
+        while idx > -MonthlyClassifier.window_length:
+            if month_idx == current_month:
+                if current_end_month_idx == 0:
+                    current_end_month_idx = idx
+            if month_idx == prev_month:
+                if current_start_month_idx == 0:
+                    current_start_month_idx = idx + 1
+
+            date_idx = date_idx - 1
+            month_idx = date_idx.month
+            idx = idx - 1
+
+
+         start_month_high = high[current_end_month_idx:, :].max(axis=0)
+        #start_month_low = low[current_end_month_idx:, :].min(axis=0)
+
+        out[:] = start_month_high
+
+
 class VolumeFilter(CustomFilter):
     """
     Filter by volume
     """
+
     def compute(self, today, asset_ids, out, volume):
         """
         Compare volume
         """
-        out[:] = volume[0] > 400000
+        out[:] = volume[0] > 200000
