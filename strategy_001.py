@@ -260,8 +260,7 @@ def handle_data(context, data):
                             if current_prices[sec] > last_complete[1]:
                                 context.positions_stop_loss[sec] = last_complete[2]
                                 order_target(sec, 1)
-                                print('Entering into ' + str(sec) + '\n60min inside and up\nCurrent Price: ' + str(current_prices[sec]) + '\nPrev Week High: ' + str(
-                                    context.output['weekly_high'][sec]) + '\nPrev Hour High: ' + str(last_complete[1]))
+                                print('Entering into ' + str(sec) + '\n60min inside and up\nCurrent Price: ' + str(current_prices[sec]) + '\nPrev Week High: ' + str(context.output['weekly_high'][sec]) + '\nPrev Hour High: ' + str(last_complete[1]))
                                 return  # exiting because we are only taking on one position at a time
     elif not open_orders and have_open_positions:
         # monitor for exits
@@ -338,7 +337,7 @@ class WeeklyGammaFilter(CustomFilter):
         day_idx = today
         week_count = 0
         # key off of transitions from 0 to 4
-        for num in range(-WeeklyClassifier.window_length, 0)[::-1]:
+        for num in range(-WeeklyGammaFilter.window_length, 0)[::-1]:
             prev_day = day_idx.weekday()
             day_idx = day_idx - 1
             new_day = day_idx.weekday()
@@ -410,7 +409,7 @@ class WeeklyGammaFilter(CustomFilter):
                   (bar_types == BAR_TYPE['gamma_beta']))
 
 
-class WeeklyHigh(CustomFilter):
+class WeeklyHigh(CustomFactor):
     """
     Classifiy weekly bars
     """
@@ -457,7 +456,7 @@ class WeeklyHigh(CustomFilter):
         out[:] = current_week_high
 
 
-class WeeklyLow(CustomFilter):
+class WeeklyLow(CustomFactor):
     """
     Classifiy weekly bars
     """
@@ -537,7 +536,7 @@ class CurrentInsideMonthClassifier(CustomFilter):
         prev_end_month_idx = 0
         prev_start_month_idx = 0
 
-        while idx > -MonthlyClassifier.window_length:
+        while idx > -CurrentInsideMonthClassifier.window_length:
             if month_idx == current_month:
                 if current_end_month_idx == 0:
                     current_end_month_idx = idx
