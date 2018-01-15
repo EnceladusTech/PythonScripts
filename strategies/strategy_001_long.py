@@ -12,6 +12,8 @@ from quantopian.pipeline.filters import StaticSids
 from quantopian.pipeline.factors import AverageDollarVolume
 
 
+TOP_NUM_STOCKS_BY_DOLLAR_VOLUME = 250
+
 BAR_TYPE = {
     'none': 0.0,
     'alpha': 2.0,
@@ -104,8 +106,8 @@ def make_pipeline():
    # exchange = Fundamentals.exchange_id.latest
     # nyse_filter = exchange.eq('NYS')
     
-    dollar_volume = AverageDollarVolume(window_length=30)
-    high_dollar_volume = dollar_volume.top(500)
+    dollar_volume = AverageDollarVolume(window_length=10)
+    high_dollar_volume = dollar_volume.top(TOP_NUM_STOCKS_BY_DOLLAR_VOLUME)
     
    # volume_filter = VolumeFilter(
     #    inputs=[USEquityPricing.volume],
@@ -194,33 +196,6 @@ def before_trading_start(context, data):
 
     context.outside_months_and_inside_weeks = len(context.current_stock_list)
 
-    # print context.output['daily_classifier']
-    # sig_counts = context.output['daily_classifier'].value_counts()
-    # if 2.0 not in sig_counts.index:
-    #     sig_counts[2.0] = 0.0
-    # if 4.0 not in sig_counts.index:
-    #     sig_counts[4.0] = 0.0
-    # if 8.0 not in sig_counts.index:
-    #     sig_counts[8.0] = 0.0
-    # if 10.0 not in sig_counts.index:
-    #     sig_counts[10.0] = 0.0
-    # if 12.0 not in sig_counts.index:
-    #     sig_counts[12.0] = 0.0
-    # if 16.0 not in sig_counts.index:
-    #     sig_counts[16.0] = 0.0
-    # if 18.0 not in sig_counts.index:
-    #     sig_counts[18.0] = 0.0
-    # if 20.0 not in sig_counts.index:
-    #     sig_counts[20.0] = 0.0
-   # record(
-        # alpha=sig_counts[2.0],
-        # beta=sig_counts[4.0],
-        # gamma=sig_counts[8.0],
-        # gamma_alpha=sig_counts[10.0],
-        # gamma_beta=sig_counts[12.0]
-        # delta=sig_counts[16.0])
-        # delta_alpha= sig_counts[18.0],
-        # delta_beta= sig_counts[20.0])
 def record_counts(context, data):
 
     record(
@@ -279,14 +254,14 @@ def handle_data(context, data):
                     # is prev bar an inside bar
                     last_complete = context.hourly_data[sec][1]
                     prev_complete = context.hourly_data[sec][0]
-                    if last_complete[1] < prev_complete[1] and last_complete[2] > prev_complete[2]:
+                    if last_complete['high'] < prev_complete['high'] and last_complete['low'] > prev_complete['low']:
                         # now we've determined last bar was inside lets check for hourly breakout
                         context.hourly_inside = context.hourly_inside + 1
-                        if current_prices[sec] > last_complete[1]:
+                        if current_prices[sec] > last_complete['high']:
                             context.hourly_break_outs = context.hourly_break_outs + 1
-                            context.positions_stop_loss[sec] = last_complete[2]
+                            context.positions_stop_loss[sec] = last_complete['low']
                             order_target(sec, 1)
-                            print('Entering into ' + str(sec) + '\n60min inside and up\nCurrent Price: ' + str(current_prices[sec]) + '\nPrev Week High: ' + str(context.output['weekly_high'][sec]) + '\nPrev Hour High: ' + str(last_complete[1]))
+                            print('Entering into ' + str(sec) + '\n60min inside and up\nCurrent Price: ' + str(current_prices[sec]) + '\nPrev Week High: ' + str(context.output['weekly_high'][sec]) + '\nPrev Hour High: ' + str(last_complete['high']))
                             return  # exiting because we are only taking on one position at a time
 
     current_prices = data.current(
@@ -309,12 +284,12 @@ def handle_data(context, data):
             if sec in context.hourly_data and len(context.hourly_data[sec]) == 2:
                 last_complete = context.hourly_data[sec][1]
                 prev_complete = context.hourly_data[sec][0]
-                if last_complete[1] < prev_complete[1] and last_complete[2] > prev_complete[2]:
+                if last_complete['high']  < prev_complete['high'] and last_complete['low'] > prev_complete['low']:
                     # we have inside bar
                     # now look for breakout down
-                    if current_prices[sec] < last_complete[2]:
+                    if current_prices[sec] < last_complete['low']:
                         print(
-                            'Exiting ' + str(sec) + ' due to 60min inside and down breakout at ' + str(last_complete[2]))
+                            'Exiting ' + str(sec) + ' due to 60min inside and down breakout at ' + str(last_complete['low']))
                         order_target(sec, 0)
                         # del context.positions_stop_loss[sec]
 
@@ -331,12 +306,16 @@ def construct_hourly_data(sec, exchange_time, context, open, high, low, close):
                 context.hourly_data[sec] = []
 
             context.hourly_data[sec].append(
-                [open[sec][0], high[sec][:-1].max(), low[sec][:-1].min(), close[sec][-2]])
+                {
+                    'open':open[sec][0], 
+                    'high':high[sec][:-1].max(),
+                    'low':low[sec][:-1].min(),
+                    'close': close[sec][-2]
+                })
             if len(context.hourly_data[sec]) > 2:
                 context.hourly_data[sec].pop(0)
     except:
         print('error in construct hours')
-
 
 
 class WeeklyGammaFilter(CustomFilter):
