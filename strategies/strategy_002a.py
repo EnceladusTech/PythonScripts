@@ -84,7 +84,7 @@ def make_pipeline():
     pipeline can be found here: https://www.quantopian.com/help#pipeline-title
     """
 
-    #symbol_filter = StaticSids([sid(43414)])
+   # symbol_filter = StaticSids([sid(26758)])
    # exchange = Fundamentals.exchange_id.latest
     # nyse_filter = exchange.eq('NYS')
 
@@ -188,17 +188,12 @@ def before_trading_start(context, data):
 
 def record_counts(context, data):
 
+    longs = len(filter(lambda sec: context.portfolio.positions[sec].amount > 0,  context.portfolio.positions.keys()))
+    shorts = len(filter(lambda sec: context.portfolio.positions[sec].amount < 0,  context.portfolio.positions.keys()))
     record(
-        pipeline=context.outside_months_and_inside_weeks,
-        weekly_break_outs=context.weekly_break_outs,
-        hourly_inside=context.hourly_inside,
-        hourly_break_outs=context.hourly_break_outs
+        longs=longs,
+        shorts=shorts
     )
-    context.outside_months_and_inside_weeks = 0
-    context.weekly_break_outs = 0
-    context.hourly_break_outs = 0
-    context.hourly_inside = 0
-
 
 def handle_data(context, data):
     """
@@ -225,6 +220,7 @@ def handle_data(context, data):
         high_sec = data.history(open_secs, "high", 61, "1m", )
         low_sec = data.history(open_secs, "low", 61, "1m", )
         close_sec = data.history(open_secs, "close", 61, "1m", )
+        open_daily_sec = data.history(open_secs, "open", 32, "1d", )
 
     current_prices = data.current(context.current_stock_list, 'price')
     today_open = data.history(context.current_stock_list, "open", 1, "1d")
@@ -242,11 +238,19 @@ def handle_data(context, data):
         pos_count = len(context.portfolio.positions)
         if pos_count == 10:
             continue
-        
+            
+        monthly_open = context.output['monthly_current_open'][sec]
+        if monthly_open == 0:
+            monthly_open = today_open[sec][0]
+                
+        weekly_open = context.output['weekly_current_open'][sec]
+        if weekly_open == 0:
+            weekly_open = today_open[sec][0]
+            
         # Should be trading outside prev months range and be an inside week at this point
         # make sure we have full timeframe continuity i.e. trading above all opens of each timeframe
-        if (current_prices[sec] > context.output['monthly_current_open'][sec] 
-            and current_prices[sec] > context.output['weekly_current_open'][sec]
+        if (current_prices[sec] > monthly_open
+            and current_prices[sec] > weekly_open
             and current_prices[sec] > today_open[sec][0]
             and current_prices[sec] > context.hourly_current_open[sec]):
             if current_prices[sec] > context.output['weekly_high'][sec]:
@@ -264,8 +268,8 @@ def handle_data(context, data):
                                 context.output['weekly_high'][sec]) + '\nPrev Hour High: ' + str(last_complete['high']))
                             return  # exiting because we are only taking on one position at a time
 
-    current_prices = data.current(
-        context.portfolio.positions.keys(), 'price')
+    current_prices = data.current(context.portfolio.positions.keys(), 'price')
+    today_open_sec = data.history(context.portfolio.positions.keys(), "open", 1, "1d")
     for sec in context.portfolio.positions.keys():
         if sec in open_orders:
             continue
@@ -284,9 +288,28 @@ def handle_data(context, data):
     
             else:
                 # look for full timeframe continuity down
-                if (current_prices[sec] < context.output['monthly_current_open'][sec]):
-                    if (current_prices[sec] < context.output['weekly_current_open'][sec]):
-                        if (current_prices[sec] < today_open[sec][0]):
+                
+                # does this security exist in current pipeline
+                # if not we have to calculate the opens historical data
+                if sec in context.output['monthly_current_open']:
+                    monthly_open = context.output['monthly_current_open'][sec]
+                else:
+                    monthly_open = get_monthly_open(sec, open_daily_sec, exchange_time)
+                if monthly_open == 0:
+                    monthly_open = today_open_sec[sec][0]
+                
+                
+                if sec in context.output['weekly_current_open']:
+                    weekly_open = context.output['weekly_current_open'][sec]
+                else:
+                    weekly_open = get_weekly_open(sec, open_daily_sec, exchange_time)
+                if weekly_open == 0:
+                    weekly_open = today_open_sec[sec][0]
+                
+                
+                if (current_prices[sec] < monthly_open):
+                    if (current_prices[sec] < weekly_open):
+                        if (current_prices[sec] < today_open_sec[sec][0]):
                             if (current_prices[sec] < context.hourly_current_open[sec]):
                                 # look for hourly inside and down breakout
                                 if sec in context.hourly_data and len(context.hourly_data[sec]) == 2:
@@ -308,10 +331,24 @@ def handle_data(context, data):
                 order_target(sec, 0)
     
             else:
+                if sec in context.output['monthly_current_open']:
+                    monthly_open = context.output['monthly_current_open'][sec]
+                else:
+                    monthly_open = get_monthly_open(sec, open_daily_sec, exchange_time)
+                if monthly_open == 0:
+                    monthly_open = today_open_sec[sec][0]
+                    
+                if sec in context.output['weekly_current_open']:
+                    weekly_open = context.output['weekly_current_open'][sec]
+                else:
+                    weekly_open = get_weekly_open(sec, open_daily_sec, exchange_time)
+                if weekly_open == 0:
+                    weekly_open = today_open_sec[sec][0]
+                    
                 # look for full timeframe continuity down
-                if (current_prices[sec] > context.output['monthly_current_open'][sec] 
-                    and current_prices[sec] > context.output['weekly_current_open'][sec]
-                    and current_prices[sec] > today_open[sec][0]
+                if (current_prices[sec] > monthly_open
+                    and current_prices[sec] > weekly_open
+                    and current_prices[sec] > today_open_sec[sec][0]
                     and current_prices[sec] > context.hourly_current_open[sec]):
                     # look for hourly inside and down breakout
                     if sec in context.hourly_data and len(context.hourly_data[sec]) == 2:
@@ -351,6 +388,29 @@ def construct_hourly_data(sec, exchange_time, context, open, high, low, close):
     except:
         print('error in construct hours')
 
+def get_monthly_open(sec, open_daily_sec, exchange_time):
+
+    for dt in open_daily_sec[sec].keys()[::-1]:
+        if dt.month != exchange_time.month:
+            price = open_daily_sec[sec][dt - 1]
+            break
+    
+    return price
+def get_weekly_open(sec, open_daily_sec, exchange_time):
+    
+    # key off of transitions from 0 to 4
+    current_weekday = -1
+    last_weekday = 10
+    if exchange_time.weekday() > 0:
+        for dt in open_daily_sec[sec].keys()[::-1]:
+            current_weekday = dt.weekday()
+            if current_weekday > last_weekday:
+                price = open_daily_sec[sec][dt - 1]
+                break
+            last_weekday = dt.weekday()
+    else:
+        price = 0
+    return price
 
 class WeeklyGammaFilter(CustomFilter):
     """
@@ -634,7 +694,7 @@ class MonthlyCurrentOpen(CustomFactor):
         else:
             out[:] = open[idx]
             
-class WeeklyCurrentOpen(CustomFilter):
+class WeeklyCurrentOpen(CustomFactor):
     """
     WeeklyCurrentOpen
     """
@@ -659,4 +719,3 @@ class WeeklyCurrentOpen(CustomFilter):
             out[:] = 0
         else:
             out[:] = open[start_week_idx]
-
