@@ -6,14 +6,14 @@ from quantopian.pipeline import CustomFactor, Pipeline, CustomFilter
 from quantopian.pipeline.data import Fundamentals
 import numpy as np
 from quantopian.pipeline.data.builtin import USEquityPricing
-from pytz import timezone
+from pytz import timezone 
 import quantopian.optimize as opt
 from quantopian.pipeline.filters import StaticSids
 from quantopian.pipeline.factors import AverageDollarVolume, SimpleMovingAverage
 
 
 VOLUME_MIN_AVG = 1000000
-
+CLOSE_PRICE_MIN_AVG = 10.00
 BAR_TYPE = {
     'none': 0.0,
     'alpha': 2.0,
@@ -75,7 +75,7 @@ def make_pipeline():
     pipeline can be found here: https://www.quantopian.com/help#pipeline-title
     """
 
-    #symbol_filter = StaticSids([sid(8399)])
+    symbol_filter = StaticSids([sid(40515), sid(41969), sid(38054)])
    # exchange = Fundamentals.exchange_id.latest
     # nyse_filter = exchange.eq('NYS')
 
@@ -83,13 +83,12 @@ def make_pipeline():
     # high_dollar_volume = dollar_volume.top(TOP_NUM_STOCKS_BY_DOLLAR_VOLUME)
     vol_sma = SimpleMovingAverage(
         inputs=[USEquityPricing.volume], window_length=90)
-    vol_filter = vol_sma > VOLUME_MIN_AVG
-#    volume_filter = VolumeFilter(
-#        inputs=[USEquityPricing.volume],
-#        window_length=10
-#    )
 
-    # is_setup = volume_filter & alpha_long_weekly & alpha_long_daily
+    price_sma = SimpleMovingAverage(
+        inputs=[USEquityPricing.close], window_length=30)
+
+    vol_filter = ~(symbol_filter) & (vol_sma > VOLUME_MIN_AVG) & (price_sma > CLOSE_PRICE_MIN_AVG)
+
     weekly_high = WeeklyHigh(
         inputs=[USEquityPricing.high],
         mask=vol_filter
@@ -107,16 +106,7 @@ def make_pipeline():
         ],
         mask=vol_filter
     )
-    # daily_classifier = DailyClassifier(
-    #     inputs=[
-    #         USEquityPricing.open,
-    #         USEquityPricing.high,
-    #         USEquityPricing.low,
-    #         USEquityPricing.close
-    #     ],
-    #     mask=volume_filter
 
-    # )
     monthly_current_open = MonthlyCurrentOpen(
         inputs=[USEquityPricing.open],
         mask=vol_filter
@@ -125,28 +115,6 @@ def make_pipeline():
         inputs=[USEquityPricing.open],
         mask=vol_filter
     )
-    # monthly_low = MonthlyLow(
-    #     inputs=[USEquityPricing.low],
-    #     mask=volume_filter
-    # )
-    # monthly_classifier = MonthlyClassifier(
-    #     inputs=[
-    #         USEquityPricing.open,
-    #         USEquityPricing.high,
-    #         USEquityPricing.low,
-    #         USEquityPricing.close
-    #     ],
-    #     mask=volume_filter
-    # )
-    #current_inside_month_classifier = CurrentInsideMonthClassifier(
-    #    inputs=[
-    #        USEquityPricing.open,
-    #        USEquityPricing.high,
-    #        USEquityPricing.low,
-    #        USEquityPricing.close
-    #    ],
-    #    mask=vol_filter
-    #)
 
     pipe = Pipeline(
         screen=(weekly_gamma_filter),
@@ -158,6 +126,7 @@ def make_pipeline():
             'weekly_gamma_filter': weekly_gamma_filter,
             'weekly_high': weekly_high,
             'weekly_low': weekly_low,
+            'weekly_ohlc': weekly_ohlc,
             'monthly_current_open': monthly_current_open,
             'weekly_current_open': weekly_current_open
         }
@@ -633,7 +602,139 @@ class WeeklyLow(CustomFactor):
                 axis=0)
 
         out[:] = current_week_low
+class WeeklyLogValues(CustomFilter):
+    """
+    Classifiy weekly bars
+    """
+    window_length = 19
 
+    def compute(self, today, asset_ids, out, open, high, low, close):
+        """
+            Do weekly classification
+        """
+
+        today_day = today.weekday()
+
+        current_end_week_idx = -today_day - 1
+        current_start_week_idx = -today_day - 5
+
+        prev_end_week_idx = -today_day - 6
+        prev_start_week_idx = -today_day - 10
+
+        two_ago_end_week_idx = -today_day - 11
+        two_ago_start_week_idx = -today_day - 15
+
+        day_idx = today
+        week_count = 0
+        # key off of transitions from 0 to 4
+        for num in range(-WeeklyLogValues.window_length, 0)[::-1]:
+            prev_day = day_idx.weekday()
+            day_idx = day_idx - 1
+            new_day = day_idx.weekday()
+            if prev_day <= new_day:
+                week_count = week_count + 1
+                factor = prev_day - new_day + 4
+            else:
+                factor = prev_day - new_day - 1
+
+            # check for closings on a monday of week
+
+            if num >= current_end_week_idx:
+                if prev_day in [0, 1] and new_day == 4:
+                    current_end_week_idx = current_end_week_idx + factor
+            if num >= current_start_week_idx:
+                current_start_week_idx = current_start_week_idx + factor
+            if num >= prev_end_week_idx:
+                if prev_day == 0 and new_day == 4 or num >= current_end_week_idx:
+                    prev_end_week_idx = prev_end_week_idx + factor
+            if num >= prev_start_week_idx:
+                prev_start_week_idx = prev_start_week_idx + factor
+
+            if num >= two_ago_end_week_idx:
+                two_ago_end_week_idx = two_ago_end_week_idx + factor
+            if num >= two_ago_start_week_idx:
+                two_ago_start_week_idx = two_ago_start_week_idx + factor
+
+        current_week_open = open[current_start_week_idx]
+        current_week_close = close[current_end_week_idx]
+
+        if current_end_week_idx == -1:
+            current_week_high = high[current_start_week_idx:, :].max(
+                axis=0)
+            current_week_low = low[current_start_week_idx:, :].min(
+                axis=0)
+        else:
+            current_week_high = high[current_start_week_idx:current_end_week_idx + 1, :].max(
+                axis=0)
+
+            current_week_low = low[current_start_week_idx:current_end_week_idx + 1, :].min(
+                axis=0)
+
+       # prev_week_open = open[prev_start_week_idx]
+       # prev_week_close = close[prev_end_week_idx]
+
+        prev_week_high = high[prev_start_week_idx:prev_end_week_idx + 1, :].max(
+            axis=0)
+        prev_week_low = low[prev_start_week_idx:prev_end_week_idx + 1, :].min(
+            axis=0)
+
+        two_ago_week_high = high[two_ago_start_week_idx:two_ago_end_week_idx + 1, :].max(
+            axis=0) 
+        two_ago_week_low = low[two_ago_start_week_idx:two_ago_end_week_idx + 1, :].min(
+            axis=0)
+
+        r_alpha_1 = (current_week_high - current_week_low) / ALPHA_DIVISOR
+        alpha_z_1 = current_week_high - r_alpha_1
+
+        r_beta_1 = (current_week_high - current_week_low) / BETA_DIVISOR
+        beta_z_1 = current_week_low + r_beta_1
+
+        # & (current_week_close[-1] > current_week_open[-1])
+        is_alpha_1 = (current_week_open > alpha_z_1) & (
+            current_week_close > alpha_z_1)
+        # & (current_week_close[-1] < current_week_open[-1])
+        is_beta_1 = (current_week_open < beta_z_1) & (current_week_close < beta_z_1)
+        is_gamma_1 = (prev_week_high > current_week_high) & (
+            prev_week_low < current_week_low)
+        is_delta_1 = (prev_week_high < current_week_high) & (
+            prev_week_low > current_week_low)
+        
+
+        bar_types_1 = [0] * len(open[-1])
+        bar_types_1 = (is_alpha_1 << 1) + bar_types
+        bar_types_1 = (is_beta_1 << 2) + bar_types
+        bar_types_1 = (is_gamma_1 << 3) + bar_types
+        bar_types_1 = (is_delta_1 << 4) + bar_types
+        
+
+
+        r_alpha_2 = (current_week_high - current_week_low) / ALPHA_DIVISOR
+        alpha_z_2 = current_week_high - r_alpha_2
+
+        r_beta_2 = (current_week_high - current_week_low) / BETA_DIVISOR
+        beta_z_2 = current_week_low + r_beta_2
+
+        # & (current_week_close[-1] > current_week_open[-1])
+        is_alpha_2 = (current_week_open > alpha_z_2) & (
+            current_week_close > alpha_z_2)
+        # & (current_week_close[-1] < current_week_open[-1])
+        is_beta_2 = (current_week_open < beta_z_2) & (current_week_close < beta_z_2)
+        is_gamma_2 = (prev_week_high > current_week_high) & (
+            prev_week_low < current_week_low)
+        is_delta_2 = (prev_week_high < current_week_high) & (
+            prev_week_low > current_week_low)
+        
+
+        bar_types_2 = [0] * len(open[-1])
+        bar_types_2 = (is_alpha_2 << 1) + bar_types
+        bar_types_2 = (is_beta_2 << 2) + bar_types
+        bar_types_2 = (is_gamma_2 << 3) + bar_types
+        bar_types_2 = (is_delta_2 << 4) + bar_types
+
+
+
+
+        out[:] = 
 
 class CurrentInsideMonthClassifier(CustomFilter):
     """

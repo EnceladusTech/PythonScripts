@@ -13,7 +13,7 @@ from quantopian.pipeline.factors import AverageDollarVolume, SimpleMovingAverage
 
 
 VOLUME_MIN_AVG = 1000000
-
+CLOSE_PRICE_MIN_AVG = 10.0
 BAR_TYPE = {
     'none': 0.0,
     'alpha': 2.0,
@@ -75,7 +75,8 @@ def make_pipeline():
     pipeline can be found here: https://www.quantopian.com/help#pipeline-title
     """
 
-    #symbol_filter = StaticSids([sid(8399)])
+    to_exclude_symbol_filter = StaticSids([sid(40515), sid(41969), sid(38054)])
+    sp_100_filter = StaticSids(getSP100())
    # exchange = Fundamentals.exchange_id.latest
     # nyse_filter = exchange.eq('NYS')
 
@@ -83,13 +84,12 @@ def make_pipeline():
     # high_dollar_volume = dollar_volume.top(TOP_NUM_STOCKS_BY_DOLLAR_VOLUME)
     vol_sma = SimpleMovingAverage(
         inputs=[USEquityPricing.volume], window_length=90)
-    vol_filter = vol_sma > VOLUME_MIN_AVG
-#    volume_filter = VolumeFilter(
-#        inputs=[USEquityPricing.volume],
-#        window_length=10
-#    )
+    price_sma = SimpleMovingAverage(
+        inputs=[USEquityPricing.close], window_length=30)
 
-    # is_setup = volume_filter & alpha_long_weekly & alpha_long_daily
+    vol_filter = ~(to_exclude_symbol_filter) & (vol_sma > VOLUME_MIN_AVG) & (price_sma > CLOSE_PRICE_MIN_AVG)
+
+
     weekly_high = WeeklyHigh(
         inputs=[USEquityPricing.high],
         mask=vol_filter
@@ -107,16 +107,17 @@ def make_pipeline():
         ],
         mask=vol_filter
     )
-    # daily_classifier = DailyClassifier(
-    #     inputs=[
-    #         USEquityPricing.open,
-    #         USEquityPricing.high,
-    #         USEquityPricing.low,
-    #         USEquityPricing.close
-    #     ],
-    #     mask=volume_filter
 
-    # )
+    monthly_outside_filter = MonthlyOutsideFilter(
+        inputs=[
+            USEquityPricing.open,
+            USEquityPricing.high,
+            USEquityPricing.low,
+            USEquityPricing.close
+        ],
+        mask=vol_filter
+    )
+
     monthly_current_open = MonthlyCurrentOpen(
         inputs=[USEquityPricing.open],
         mask=vol_filter
@@ -125,41 +126,21 @@ def make_pipeline():
         inputs=[USEquityPricing.open],
         mask=vol_filter
     )
-    # monthly_low = MonthlyLow(
-    #     inputs=[USEquityPricing.low],
-    #     mask=volume_filter
-    # )
-    # monthly_classifier = MonthlyClassifier(
-    #     inputs=[
-    #         USEquityPricing.open,
-    #         USEquityPricing.high,
-    #         USEquityPricing.low,
-    #         USEquityPricing.close
-    #     ],
-    #     mask=volume_filter
-    # )
-    #current_inside_month_classifier = CurrentInsideMonthClassifier(
-    #    inputs=[
-    #        USEquityPricing.open,
-    #        USEquityPricing.high,
-    #        USEquityPricing.low,
-    #        USEquityPricing.close
-    #    ],
-    #    mask=vol_filter
-    #)
 
     pipe = Pipeline(
-        screen=(weekly_gamma_filter),
+        screen=(weekly_gamma_filter) & (monthly_outside_filter),
         # screen = symbol_filter,
         columns={
             # 'daily_classifier': daily_classifier,
             # 'daily_high': USEquityPricing.high.latest,
             # 'daily_low': USEquityPricing.low.latest,
             'weekly_gamma_filter': weekly_gamma_filter,
+            'monthly_outside_filter': monthly_outside_filter,
             'weekly_high': weekly_high,
             'weekly_low': weekly_low,
             'monthly_current_open': monthly_current_open,
-            'weekly_current_open': weekly_current_open
+            'weekly_current_open': weekly_current_open,
+            'is_sp_100': sp_100_filter
         }
     )
     return pipe
@@ -173,8 +154,6 @@ def before_trading_start(context, data):
     context.current_stock_list = context.output.index.tolist()
     context.hourly_data = {}
    # print(len(context.current_stock_list))
-
-    context.outside_months_and_inside_weeks = len(context.current_stock_list)
 
 
 def record_counts(context, data):
@@ -224,6 +203,7 @@ def handle_data(context, data):
 
         if not data.can_trade(sec):
             continue
+
         # build intraday bars
         construct_hourly_data(sec, exchange_time,
                               context, open, high, low, close)
@@ -245,7 +225,8 @@ def handle_data(context, data):
             
         # Should be trading outside prev months range and be an inside week at this point
         # make sure we have full timeframe continuity i.e. trading above all opens of each timeframe
-        if (current_prices[sec] > monthly_open
+        if (context.output['is_sp_100'][sec]
+            and current_prices[sec] > monthly_open
             and current_prices[sec] > weekly_open
             and current_prices[sec] > today_open[sec][0]
             and current_prices[sec] > context.hourly_current_open[sec]):
@@ -446,7 +427,7 @@ class WeeklyGammaFilter(CustomFilter):
     """
     Classifiy weekly bars
     """
-    window_length = 14
+    window_length = 19
 
     def compute(self, today, asset_ids, out, open, high, low, close):
         """
@@ -460,6 +441,9 @@ class WeeklyGammaFilter(CustomFilter):
 
         prev_end_week_idx = -today_day - 6
         prev_start_week_idx = -today_day - 10
+
+        two_ago_end_week_idx = -today_day - 11
+        two_ago_start_week_idx = -today_day - 15
 
         day_idx = today
         week_count = 0
@@ -487,6 +471,11 @@ class WeeklyGammaFilter(CustomFilter):
             if num >= prev_start_week_idx:
                 prev_start_week_idx = prev_start_week_idx + factor
 
+            if num >= two_ago_end_week_idx:
+                two_ago_end_week_idx = two_ago_end_week_idx + factor
+            if num >= two_ago_start_week_idx:
+                two_ago_start_week_idx = two_ago_start_week_idx + factor
+
         current_week_open = open[current_start_week_idx]
         current_week_close = close[current_end_week_idx]
 
@@ -510,6 +499,11 @@ class WeeklyGammaFilter(CustomFilter):
         prev_week_low = low[prev_start_week_idx:prev_end_week_idx + 1, :].min(
             axis=0)
 
+        two_ago_week_high = high[two_ago_start_week_idx:two_ago_end_week_idx + 1, :].max(
+            axis=0) 
+        two_ago_week_low = low[two_ago_start_week_idx:two_ago_end_week_idx + 1, :].min(
+            axis=0)
+
         r_alpha = (current_week_high - current_week_low) / ALPHA_DIVISOR
         alpha_z = current_week_high - r_alpha
 
@@ -525,16 +519,22 @@ class WeeklyGammaFilter(CustomFilter):
             prev_week_low < current_week_low)
         is_delta = (prev_week_high < current_week_high) & (
             prev_week_low > current_week_low)
+        
 
         bar_types = [0] * len(open[-1])
         bar_types = (is_alpha << 1) + bar_types
         bar_types = (is_beta << 2) + bar_types
         bar_types = (is_gamma << 3) + bar_types
         bar_types = (is_delta << 4) + bar_types
-        out[:] = ((bar_types == BAR_TYPE['gamma']) |
+        
+        is_any_gamma = ((bar_types == BAR_TYPE['gamma']) |
                   (bar_types == BAR_TYPE['gamma_alpha']) |
                   (bar_types == BAR_TYPE['gamma_beta']))
 
+        is_current_week_preceded_by_outside_week = (prev_week_high > two_ago_week_high) & (prev_week_low < two_ago_week_low)
+
+
+        out[:] = (is_any_gamma) & ~(is_current_week_preceded_by_outside_week)
 
 class WeeklyHigh(CustomFactor):
     """
@@ -581,7 +581,6 @@ class WeeklyHigh(CustomFactor):
                 axis=0)
 
         out[:] = current_week_high
-
 
 class WeeklyLow(CustomFactor):
     """
@@ -633,67 +632,6 @@ class WeeklyLow(CustomFactor):
                 axis=0)
 
         out[:] = current_week_low
-
-
-class CurrentInsideMonthClassifier(CustomFilter):
-    """
-    Determine if current month is trading within prev months range
-    """
-    window_length = 61
-
-    def compute(self, today, asset_ids, out, open, high, low, close):
-        """
-            Determine if current month is trading within prev months range
-        """
-        start_month = today.month
-        current_month = start_month - 1 if start_month - 1 > 0 else 12
-        prev_month = current_month - 1 if current_month - 1 > 0 else 12
-        idx = -1
-        date_idx = today - 1
-        month_idx = date_idx.month
-
-        current_end_month_idx = 0
-        current_start_month_idx = 0
-
-        prev_end_month_idx = 0
-        prev_start_month_idx = 0
-
-        while idx > -CurrentInsideMonthClassifier.window_length:
-            if month_idx == current_month:
-                if current_end_month_idx == 0:
-                    current_end_month_idx = idx
-            if month_idx == prev_month:
-                if current_start_month_idx == 0:
-                    current_start_month_idx = idx + 1
-
-                if prev_end_month_idx == 0:
-                    prev_end_month_idx = idx
-
-            if month_idx not in [start_month, current_month, prev_month]:
-                if prev_start_month_idx == 0:
-                    prev_start_month_idx = idx
-
-            date_idx = date_idx - 1
-            month_idx = date_idx.month
-            idx = idx - 1
-
-        if current_end_month_idx == -1:
-            current_month_high = high[current_start_month_idx:, :].max(
-                axis=0)
-            current_month_low = low[current_start_month_idx:, :].min(
-                axis=0)
-        else:
-            current_month_high = high[current_start_month_idx:current_end_month_idx + 1, :].max(
-                axis=0)
-
-            current_month_low = low[current_start_month_idx:current_end_month_idx + 1, :].min(
-                axis=0)
-
-        start_month_high = high[current_end_month_idx:, :].max(axis=0)
-        start_month_low = low[current_end_month_idx:, :].min(axis=0)
-        out[:] = (start_month_high > current_month_high) | (
-            start_month_low < current_month_low)
-
 
 class MonthlyCurrentOpen(CustomFactor):
     """
@@ -749,3 +687,219 @@ class WeeklyCurrentOpen(CustomFactor):
             out[:] = 0
         else:
             out[:] = open[start_week_idx]
+
+class MonthlyOutsideFilter(CustomFilter):
+    """
+    Classifiy monthly bars
+    """
+    window_length = 92
+
+    def compute(self, today, asset_ids, out, open, high, low, close):
+        """
+            Do monthly classification
+        """
+        start_month = today.month
+        current_month = start_month - 1 if start_month - 1 > 0 else 12
+        prev_month = current_month - 1 if current_month - 1 > 0 else 12
+        idx = -1
+        date_idx = today - 1
+        month_idx = date_idx.month
+
+        current_end_month_idx = 0
+        current_start_month_idx = 0
+
+        prev_end_month_idx = 0
+        prev_start_month_idx = 0
+
+        while idx > -MonthlyOutsideFilter.window_length:
+            if month_idx == current_month:
+                if current_end_month_idx == 0:
+                    current_end_month_idx = idx
+            if month_idx == prev_month:
+                if current_start_month_idx == 0:
+                    current_start_month_idx = idx + 1
+
+                if prev_end_month_idx == 0:
+                    prev_end_month_idx = idx
+
+            if month_idx not in [start_month, current_month, prev_month]:
+                if prev_start_month_idx == 0:
+                    prev_start_month_idx = idx
+
+            date_idx = date_idx - 1
+            month_idx = date_idx.month
+            idx = idx - 1
+
+        current_month_open = open[current_start_month_idx]
+        current_month_close = close[current_end_month_idx]
+
+        if current_end_month_idx == -1:
+            current_month_high = high[current_start_month_idx:, :].max(
+                axis=0)
+            current_month_low = low[current_start_month_idx:, :].min(
+                axis=0)
+        else:
+            current_month_high = high[current_start_month_idx:current_end_month_idx + 1, :].max(
+                axis=0)
+
+            current_month_low = low[current_start_month_idx:current_end_month_idx + 1, :].min(
+                axis=0)
+       # prev_month_open = open[prev_start_month_idx]
+       # prev_month_close = close[prev_end_month_idx]
+
+        prev_month_high = high[prev_start_month_idx:
+                               prev_end_month_idx + 1, :].max(axis=0)
+        prev_month_low = low[prev_start_month_idx:
+                             prev_end_month_idx + 1, :].min(axis=0)
+
+        r_alpha = (current_month_high - current_month_low) / ALPHA_DIVISOR
+        alpha_z = current_month_high - r_alpha
+
+        r_beta = (current_month_high - current_month_low) / BETA_DIVISOR
+        beta_z = current_month_low + r_beta
+
+        # & (current_month_close[-1] > current_month_open[-1])
+        is_alpha = (current_month_open > alpha_z) & (
+            current_month_close > alpha_z)
+        # & (current_month_close[-1] < current_month_open[-1])
+        is_beta = (current_month_open < beta_z) & (
+            current_month_close < beta_z)
+        is_gamma = (prev_month_high < current_month_high) & (
+            prev_month_low > current_month_low)
+        is_delta = (prev_month_high > current_month_high) & (
+            prev_month_low < current_month_low)
+
+        bar_types = [0] * len(open[-1])
+        bar_types = (is_alpha << 1) + bar_types
+        bar_types = (is_beta << 2) + bar_types
+        bar_types = (is_gamma << 3) + bar_types
+        bar_types = (is_delta << 4) + bar_types
+        out[:] = ~((bar_types == BAR_TYPE['delta']) |
+                  (bar_types == BAR_TYPE['delta_alpha']) |
+                  (bar_types == BAR_TYPE['delta_beta']))
+
+
+def getSP100(context):
+    return [
+    sid(24),    # AAPL,  APPLE INC
+    sid(43694), # ABBV
+    sid(62),    # ABT,   ABBOTT LABORATORIES
+    sid(25555), # ACN,   ACCENTURE PLC
+    sid(205),   # AGN,
+    #sid(161),   # AEP,   AMERICAN ELECTRIC POWER INC
+    sid(239),   # AIG,   AMERICAN INTL GROUP INC
+    sid(24838), # ALL,   ALLSTATE CORP (THE)
+    sid(368),   # AMGN,  AMGEN INC
+    sid(16841), # AMZN,  AMAZON.COM INC
+    #sid(448),   # APA,   APACHE CORP
+    #sid(455),   # APC,   ANADARKO PETROLEUM CORP
+    sid(679),   # AXP,   AMERICAN EXPRESS COMPANY
+    sid(698),   # BA,    BOEING CO
+    sid(700),   # BAC,   BANK OF AMERICA CORP
+    sid(3806),  #BIIB,
+    #sid(734),   # BAX,   BAXTER INTERNATIONAL INC
+    sid(903),   # BK,    BANK OF NEW YORK MELLON CORP/T
+    sid(20689), # BLK,
+    sid(980),   # BMY,   BRISTOL MYERS SQUIBB COMPANY
+    sid(11100), # BRK.B, BERKSHIRE HATHWY INC(HLDG CO) B
+    sid(1335),  # C,     CITIGROUP
+    sid(1267),  # CAT,   CATERPILLAR INC
+    sid(1406), # CELG,
+    sid(20838), #CHTR,
+    sid(1582),  # CL,    COLGATE-PALMOLIVE CO
+    sid(1637), #CMCSA	Comcast Corporation
+    sid(12160), # COF,   CAPITAL ONE FINANCIAL CORP
+    sid(23998), # COP,   CONOCOPHILLIPS
+    sid(1787),  # COST,  COSTCO WHOLESALE CORP
+    sid(1900),  # CSCO,  CISCO SYSTEMS INC
+    #sid(1971),  # CTS,   CTS CORP
+    sid(4799),  # CVS,   CVS CAREMARK CORP
+    sid(23112), # CVX,   CHEVRON CORPORATION
+    #sid(2119),  # DD,    DU PONT DE NEMOURS E I &CO
+    #sid(25317), # DELL,  DELL INC
+    sid(2170),      # DHR	Danaher
+    sid(2190),  # DIS,   WALT DISNEY CO-DISNEY COMMON
+    sid(2351),      #DUK	Duke Energy
+    sid(51157),      #DWDP	DowDuPont
+    #sid(2263),  # DOW,   DOW CHEMICAL CO
+    #sid(2368),  # DVN,   DEVON ENERGY CORP (NEW)
+    #sid(24819), # EBAY,  EBAY INC
+    #sid(2518),  # EMC,   EMC CORPORATION
+    sid(2530),  # EMR,   EMERSON ELECTRIC CO
+    sid(22114), # EXC,   EXELON CORPORATION
+    sid(2673),  # F,     FORD MOTOR CO(NEW)
+    sid(42950),  #FB	Facebook
+    #sid(13197), # FCX,   FREEPORT-MCMORAN COPPER&GOLD B
+    sid(2765),  # FDX,   FEDEX CORPORATION
+    sid(5530),      #FOX	21st Century Fox
+    sid(12213),      #FOXA	21st Century Fox
+    sid(3136),  # GD,    GENERAL DYNAMICS CORP
+    sid(3149),  # GE,    GENERAL ELECTRIC CO
+    sid(3212),  # GILD,  GILEAD SCIENCES INC
+    sid(3246),  # GM,    GENERAL MOTORS CORP
+    sid(46631), # GOOG,  GOOGLE INC,
+    sid(26578),      # GOOGL	Alphabet Inc
+    sid(20088), # GS,    GOLDMAN SACHS GROUP INC
+    sid(3443),  # HAL,   HALLIBURTON CO (HOLDING CO)
+    sid(3496),  # HD,    HOME DEPOT INC
+    sid(25090), # HON,   HONEYWELL INTERNATIONAL INC
+    #sid(3735),  # HPQ,   HEWLETT-PACKARD CO
+    sid(3766),  # IBM,   INTL BUSINESS MACHINES CORP
+    sid(3951),  # INTC,  INTEL CORP
+    sid(4151),  # JNJ,   JOHNSON AND JOHNSON
+    sid(25006), # JPM,   JPMORGAN CHASE & CO COM STK
+    sid(49229),      #KHC	Kraft Heinz
+    sid(20744),      #KMI	Kinder Morgan Inc/DE **KMI has 2 ids in quantopia
+    sid(40852),          #KMI Kinder Morgan Inc/DE *KMI has 2 ids in quantopia
+    sid(4283),  # KO,    COCA-COLA CO
+    sid(4487),  # LLY,   LILLY ELI & CO
+    sid(12691), # LMT,   LOCKHEED MARTIN CORP
+    sid(4521),  # LOW,   LOWES COMPANIES INC
+    sid(32146), # MA,    MASTERCARD INC
+    sid(4707),  # MCD,   MCDONALDS CORP
+    sid(22802), # MDLZ,  MONDELEZ INTERNATIONAL INC
+    sid(4758),  # MDT,   MEDTRONIC INC
+    sid(21418), # MET,   METLIFE  INC
+    sid(4922),  # MMM,   3M COMPANY
+    sid(4954),  # MO,    ALTRIA GROUP INC.
+    sid(22140), # MON,   MONSANTO COMPANY
+    sid(5029),  # MRK,   MERCK & CO INC
+    sid(17080), # MS,    MORGAN STANLEY
+    sid(5061),  # MSFT,  MICROSOFT CORP
+    sid(2968),      #NEE	NextEra Energy
+    sid(5328),  # NKE,   NIKE INC CL-B
+    #sid(24809), # NOV,   NATIONAL OILWELL VARCO  INC.
+    #sid(5442),  # NSC,   NORFOLK SOUTHERN CORP
+    #sid(12213), # NWSA,  NEWS CP - CL A
+    sid(5692),  # ORCL,  ORACLE CORP
+    sid(5729),  # OXY,   OCCIDENTAL PETROLEUM CORP
+    sid(19917),      #PCLN	Priceline Group Inc/The
+    sid(5885),  # PEP,   PEPSICO INC
+    sid(5923),  # PFE,   PFIZER INC
+    sid(5938),  # PG,    PROCTER & GAMBLE CO
+    sid(35902), # PM,    PHILIP MORRIS INTERNATIONAL INC
+    sid(49242),      #PYPL	PayPal Holdings
+    sid(6295),  # QCOM,  QUALCOMM INC
+    sid(6583),  # RTN,   RAYTHEON CO. (NEW)
+    sid(6683),  # SBUX,  STARBUCKS CORPORATION
+    sid(6928),  # SLB,   SCHLUMBERGER LTD
+    sid(7011),  # SO,    SOUTHERN CO
+    sid(10528), # SPG,   SIMON PROPERTIES GROUP INC
+    sid(6653),  # T,     AT&T INC. COM
+    sid(21090), # TGT,   TARGET CORPORATION
+    sid(357),   # TWX,   TIME WARNER INC.
+    sid(7671),  # TXN,   TEXAS INSTRUMENTS INC
+    sid(7792),  # UNH,   UNITEDHEALTH GROUP INC
+    sid(7800),  # UNP,   UNION PACIFIC CORPORATION
+    sid(20940), # UPS,   UNITED PARCEL SERVICE INC.CL B
+    sid(25010), # USB,   U.S.BANCORP (NEW)
+    sid(7883),  # UTX,   UNITED TECHNOLOGIES CORP
+    sid(35920), # V,     VISA INC
+    sid(21839), # VZ,    VERIZON COMMUNICATIONS
+    #sid(8089),  # WAG,   WALGREEN COMPANY
+    sid(8089),       #WBA	Walgreens Boots Alliance
+    sid(8151),  # WFC,   WELLS FARGO & CO(NEW)d
+    #sid(8214),  # WMB,   WILLIAMS COMPANIES
+    sid(8229),  # WMT,   WAL-MART STORES INC
+    sid(8347),  # XOM,   EXXON MOBIL CORPORATION
+    ]
